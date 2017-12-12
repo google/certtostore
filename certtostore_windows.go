@@ -22,6 +22,7 @@ import (
 	"crypto/rsa"
 	"crypto/x509"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"math/big"
@@ -67,6 +68,9 @@ const (
 	ncryptAllowDecryptFlag = 0x1        // NCRYPT_ALLOW_DECRYPT_FLAG
 	ncryptAllowSigningFlag = 0x2        // NCRYPT_ALLOW_SIGNING_FLAG
 
+	// NCryptPadOAEPFlag is used with Decrypt to specify whether to use OAEP.
+	NCryptPadOAEPFlag = 0x00000004 // NCRYPT_PAD_OAEP_FLAG
+
 	// key creation flags.
 	nCryptMachineKey   = 0x20 // NCRYPT_MACHINE_KEY_FLAG
 	nCryptOverwriteKey = 0x80 // NCRYPT_OVERWRITE_KEY_FLAG
@@ -105,6 +109,7 @@ var (
 	certGetIntendedKeyUsage         = crypt32.MustFindProc("CertGetIntendedKeyUsage")
 	cryptFindCertificateKeyProvInfo = crypt32.MustFindProc("CryptFindCertificateKeyProvInfo")
 	nCryptCreatePersistedKey        = nCrypt.MustFindProc("NCryptCreatePersistedKey")
+	nCryptDecrypt                   = nCrypt.MustFindProc("NCryptDecrypt")
 	nCryptExportKey                 = nCrypt.MustFindProc("NCryptExportKey")
 	nCryptFinalizeKey               = nCrypt.MustFindProc("NCryptFinalizeKey")
 	nCryptOpenKey                   = nCrypt.MustFindProc("NCryptOpenKey")
@@ -409,7 +414,7 @@ func (w *WinCertStore) Intermediate() (*x509.Certificate, error) {
 	return w.cert(w.intermediateIssuer, certStoreLocalMachine)
 }
 
-// Key implements crypto.Signer and is used with Generate()
+// Key implements crypto.Signer and crypto.Decrypter for key based operations.
 type Key struct {
 	handle    uintptr
 	pub       *rsa.PublicKey
@@ -467,6 +472,62 @@ func sign(kh uintptr, digest []byte, algID *uint16) ([]byte, error) {
 	return sig[:size], nil
 }
 
+// DecrypterOpts implements crypto.DecrypterOpts and contains the
+// flags required for the NCryptDecrypt system call.
+type DecrypterOpts struct {
+	// Flags represents the dwFlags parameter for NCryptDecrypt
+	Flags uintptr
+}
+
+// Decrypt returns the decrypted contents of the encrypted blob, and implements
+// crypto.Decrypter for Key.
+func (k *Key) Decrypt(rand io.Reader, blob []byte, opts crypto.DecrypterOpts) ([]byte, error) {
+	decrypterOpts, ok := opts.(DecrypterOpts)
+	if !ok {
+		return nil, errors.New("opts was not certtostore.DecrypterOpts")
+	}
+
+	return decrypt(k.handle, blob, decrypterOpts.Flags)
+}
+
+// decrypt wraps the NCryptDecrypt function and returns the decrypted bytes
+// that were previously encrypted by NCryptEncrypt or another compatible
+// function such as rsa.EncryptOAEP. The pPaddingInfo parameter is not implemented.
+// https://msdn.microsoft.com/en-us/library/windows/desktop/aa376249(v=vs.85).aspx
+func decrypt(kh uintptr, blob []byte, flags uintptr) ([]byte, error) {
+	var size uint32
+	// Obtain the size of the decrypted data
+	r, _, err := nCryptDecrypt.Call(
+		kh, // hKey
+		uintptr(unsafe.Pointer(&blob[0])), // pbInput
+		uintptr(len(blob)),                // cbInput
+		0,                                 // *pPaddingInfo
+		0,                                 // pbOutput, must be null on first run
+		0,                                 // cbOutput, ignored on first run
+		uintptr(unsafe.Pointer(&size)), // pcbResult
+		NCryptPadOAEPFlag)
+	if r != 0 {
+		return nil, fmt.Errorf("NCryptDecrypt returned %X during size check: %v", r, err)
+	}
+
+	// Decrypt the message
+	plainText := make([]byte, size)
+	r, _, err = nCryptDecrypt.Call(
+		kh, // hKey
+		uintptr(unsafe.Pointer(&blob[0])), // pbInput
+		uintptr(len(blob)),                // cbInput
+		0,                                 // *pPaddingInfo
+		uintptr(unsafe.Pointer(&plainText[0])), // pbOutput, must be null on first run
+		uintptr(size),                          // cbOutput, ignored on first run
+		uintptr(unsafe.Pointer(&size)),         // pcbResult
+		NCryptPadOAEPFlag)
+	if r != 0 {
+		return nil, fmt.Errorf("NCryptDecrypt returned %X during decryption: %v", r, err)
+	}
+
+	return plainText[:size], nil
+}
+
 // SetACL sets permissions for the private key by wrapping the Microsoft
 // icacls utility. For CNG keys (even TPM backed keys), access is controlled
 // by NTFS ACLs. icacls is used for simple ACL setting versus more complicated
@@ -492,7 +553,8 @@ func (k *Key) SetACL(store *WinCertStore, access string, sid string, perm string
 	return nil
 }
 
-// Key opens a handle to an existing private key and returns key, which is a crypto.Signer
+// Key opens a handle to an existing private key and returns key.
+// Key implements both crypto.Signer and crypto.Decrypter
 func (w *WinCertStore) Key() (*Key, error) {
 	var kh uintptr
 	r, _, err := nCryptOpenKey.Call(
