@@ -89,15 +89,21 @@ type Win32_NetworkAdapter struct {
 	MACAddress string
 }
 
-// NetInfo obtains the mac address of the first local non-USB NIC
-func NetInfo() (*Win32_NetworkAdapter, error) {
+// NetInfo obtains the mac address of all local non-USB network devices
+func NetInfo() ([]string, error) {
 	var netInfo []Win32_NetworkAdapter
 	if err := wmi.Query(wmi.CreateQuery(&netInfo, "where PhysicalAdapter=1 AND PNPDeviceID LIKE \"%PCI%\" AND AdapterTypeID=0"), &netInfo); err != nil {
 		return nil, err
 	}
+
 	if len(netInfo) == 0 {
-		return nil, fmt.Errorf("network adapter not detected. got: %d want: 1", len(netInfo))
+		return nil, fmt.Errorf("network adapter not detected. got: %d want: >= 1", len(netInfo))
 	}
 
-	return &netInfo[0], nil
+	var macs []string
+	for _, adapter := range netInfo {
+		macs = append(macs, adapter.MACAddress)
+	}
+
+	return macs, nil
 }

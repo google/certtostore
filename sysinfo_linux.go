@@ -63,6 +63,6 @@ func CompProdInfo() (ComputerInfo, error) {
 }
 
 // NetInfo is a stub for build compatibility.
-func NetInfo() (ComputerInfo, error) {
-	return ComputerInfo{}, nil
+func NetInfo() ([]string, error) {
+	return nil, nil
 }
