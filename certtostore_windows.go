@@ -475,8 +475,19 @@ func sign(kh uintptr, digest []byte, algID *uint16) ([]byte, error) {
 // DecrypterOpts implements crypto.DecrypterOpts and contains the
 // flags required for the NCryptDecrypt system call.
 type DecrypterOpts struct {
+	// Hashfunc represents the hashing function that was used during
+	// encryption and is mapped to the Microsoft equivalent LPCWSTR.
+	Hashfunc crypto.Hash
 	// Flags represents the dwFlags parameter for NCryptDecrypt
-	Flags uintptr
+	Flags uint32
+}
+
+// oaepPaddingInfo is the BCRYPT_OAEP_PADDING_INFO struct in bcrypt.h.
+// https://msdn.microsoft.com/en-us/library/windows/desktop/aa375526(v=vs.85).aspx
+type oaepPaddingInfo struct {
+	pszAlgID *uint16 // pszAlgId
+	pbLabel  *uint16 // pbLabel
+	cbLabel  uint32  // cbLabel
 }
 
 // Decrypt returns the decrypted contents of the encrypted blob, and implements
@@ -487,25 +498,36 @@ func (k *Key) Decrypt(rand io.Reader, blob []byte, opts crypto.DecrypterOpts) ([
 		return nil, errors.New("opts was not certtostore.DecrypterOpts")
 	}
 
-	return decrypt(k.handle, blob, decrypterOpts.Flags)
+	algID, ok := algIDs[decrypterOpts.Hashfunc]
+	if !ok {
+		return nil, fmt.Errorf("unsupported hash algorithm %v", decrypterOpts.Hashfunc)
+	}
+
+	padding := oaepPaddingInfo{
+		pszAlgID: algID,
+		pbLabel:  wide(""),
+		cbLabel:  0,
+	}
+
+	return decrypt(k.handle, blob, padding, decrypterOpts.Flags)
 }
 
 // decrypt wraps the NCryptDecrypt function and returns the decrypted bytes
 // that were previously encrypted by NCryptEncrypt or another compatible
-// function such as rsa.EncryptOAEP. The pPaddingInfo parameter is not implemented.
+// function such as rsa.EncryptOAEP.
 // https://msdn.microsoft.com/en-us/library/windows/desktop/aa376249(v=vs.85).aspx
-func decrypt(kh uintptr, blob []byte, flags uintptr) ([]byte, error) {
+func decrypt(kh uintptr, blob []byte, padding oaepPaddingInfo, flags uint32) ([]byte, error) {
 	var size uint32
 	// Obtain the size of the decrypted data
 	r, _, err := nCryptDecrypt.Call(
 		kh, // hKey
 		uintptr(unsafe.Pointer(&blob[0])), // pbInput
 		uintptr(len(blob)),                // cbInput
-		0,                                 // *pPaddingInfo
-		0,                                 // pbOutput, must be null on first run
-		0,                                 // cbOutput, ignored on first run
+		uintptr(unsafe.Pointer(&padding)), // *pPaddingInfo
+		0, // pbOutput, must be null on first run
+		0, // cbOutput, ignored on first run
 		uintptr(unsafe.Pointer(&size)), // pcbResult
-		NCryptPadOAEPFlag)
+		uintptr(flags))
 	if r != 0 {
 		return nil, fmt.Errorf("NCryptDecrypt returned %X during size check: %v", r, err)
 	}
@@ -514,13 +536,13 @@ func decrypt(kh uintptr, blob []byte, flags uintptr) ([]byte, error) {
 	plainText := make([]byte, size)
 	r, _, err = nCryptDecrypt.Call(
 		kh, // hKey
-		uintptr(unsafe.Pointer(&blob[0])), // pbInput
-		uintptr(len(blob)),                // cbInput
-		0,                                 // *pPaddingInfo
+		uintptr(unsafe.Pointer(&blob[0])),      // pbInput
+		uintptr(len(blob)),                     // cbInput
+		uintptr(unsafe.Pointer(&padding)),      // *pPaddingInfo
 		uintptr(unsafe.Pointer(&plainText[0])), // pbOutput, must be null on first run
 		uintptr(size),                          // cbOutput, ignored on first run
 		uintptr(unsafe.Pointer(&size)),         // pcbResult
-		NCryptPadOAEPFlag)
+		uintptr(flags))
 	if r != 0 {
 		return nil, fmt.Errorf("NCryptDecrypt returned %X during decryption: %v", r, err)
 	}
