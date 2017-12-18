@@ -95,11 +95,12 @@ var (
 		crypto.SHA512: wide("SHA512"), // BCRYPT_SHA512_ALGORITHM
 	}
 
-	// MY and CA are well-known system stores that holds certificates. The store
-	// that is opened (system or user) depends on the system call used.
+	// MY, CA and ROOT are well-known system stores that holds certificates.
+	// The store that is opened (system or user) depends on the system call used.
 	// see https://msdn.microsoft.com/en-us/library/windows/desktop/aa376560(v=vs.85).aspx)
-	my = wide("MY")
-	ca = wide("CA")
+	my   = wide("MY")
+	ca   = wide("CA")
+	root = wide("ROOT")
 
 	crypt32 = windows.MustLoadDLL("crypt32.dll")
 	nCrypt  = windows.MustLoadDLL("ncrypt.dll")
@@ -202,12 +203,12 @@ func OpenWinCertStore(provider, issuer, intermediateIssuer, container string) (*
 
 // Cert returns the current cert associated with this WinCertStore or nil if there isn't one.
 func (w *WinCertStore) Cert() (*x509.Certificate, error) {
-	return w.cert(w.issuer, certStoreLocalMachine)
+	return w.cert(w.issuer, my, certStoreLocalMachine)
 }
 
-// cert is used by the exported Cert and Intermediate functions to lookup certificates. store is
-// used to specify which store to perform the lookup in (system or user).
-func (w *WinCertStore) cert(issuer string, store uint32) (*x509.Certificate, error) {
+// cert is used by the exported Cert, Intermediate and root functions to lookup certificates.
+// store is used to specify which store to perform the lookup in (system or user).
+func (w *WinCertStore) cert(issuer string, searchRoot *uint16, store uint32) (*x509.Certificate, error) {
 	i, err := windows.UTF16PtrFromString(issuer)
 	if err != nil {
 		return nil, err
@@ -219,7 +220,7 @@ func (w *WinCertStore) cert(issuer string, store uint32) (*x509.Certificate, err
 		0,
 		0,
 		store,
-		uintptr(unsafe.Pointer(my)))
+		uintptr(unsafe.Pointer(searchRoot)))
 	if err != nil {
 		return nil, fmt.Errorf("store: CertOpenStore returned %v", err)
 	}
@@ -264,7 +265,7 @@ func (w *WinCertStore) cert(issuer string, store uint32) (*x509.Certificate, err
 
 // Link will associate the certificate installed in the system store to the user store.
 func (w *WinCertStore) Link() error {
-	cert, err := w.cert(w.issuer, certStoreLocalMachine)
+	cert, err := w.cert(w.issuer, my, certStoreLocalMachine)
 	if err != nil {
 		return fmt.Errorf("link: checking for existing machine certificates returned %v", err)
 	}
@@ -274,7 +275,7 @@ func (w *WinCertStore) Link() error {
 	}
 
 	// If the user cert is already there and matches the system cert, return early.
-	userCert, err := w.cert(w.issuer, certStoreCurrentUser)
+	userCert, err := w.cert(w.issuer, my, certStoreCurrentUser)
 	if err != nil {
 		return fmt.Errorf("link: checking for existing user certificates returned %v", err)
 	}
@@ -411,7 +412,14 @@ func removeCert(certContext *windows.CertContext) error {
 // Intermediate returns the current intermediate cert associated with this
 // WinCertStore or nil if there isn't one.
 func (w *WinCertStore) Intermediate() (*x509.Certificate, error) {
-	return w.cert(w.intermediateIssuer, certStoreLocalMachine)
+	//TODO(b/70786648) parameterize which cert store to use.
+	return w.cert(w.intermediateIssuer, my, certStoreCurrentUser)
+}
+
+// Root returns the certificate issued by the specified issuer from the
+// root certificate store 'ROOT/Certificates'.
+func (w *WinCertStore) Root(issuer string) (*x509.Certificate, error) {
+	return w.cert(issuer, root, certStoreLocalMachine)
 }
 
 // Key implements crypto.Signer and crypto.Decrypter for key based operations.
