@@ -110,11 +110,8 @@ func (f *FileStorage) Store(cert *x509.Certificate, intermediate *x509.Certifica
 	if err := pem.Encode(&keyBuf, &pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(f.key)}); err != nil {
 		return fmt.Errorf("could not encode key to PEM: %v", err)
 	}
-	if err := ioutil.WriteFile(filepath.Join(f.path, "cert.key"), keyBuf.Bytes(), createMode); err != nil {
-		return err
-	}
 
-	return nil
+	return ioutil.WriteFile(filepath.Join(f.path, "cert.key"), keyBuf.Bytes(), createMode)
 }
 
 // certFromDisk reads a x509.Certificate from a location on disk and
