@@ -27,8 +27,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-
-	"github.com/google/certtostore/sysinfo"
 )
 
 const (
@@ -144,7 +142,7 @@ func SANCheck(c *x509.Certificate) error {
 		return fmt.Errorf("certificate does not contain a SAN")
 	}
 
-	cs, err := sysinfo.CompInfo()
+	cs, err := CompInfo()
 	if err != nil {
 		return fmt.Errorf("could not discover computer information: %v", err)
 	}

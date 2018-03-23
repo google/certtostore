@@ -14,8 +14,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package sysinfo provides Windows specific functionality
-package sysinfo
+package certtostore
 
 import (
 	"errors"
