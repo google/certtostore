@@ -412,7 +412,7 @@ func removeCert(certContext *windows.CertContext) error {
 // Intermediate returns the current intermediate cert associated with this
 // WinCertStore or nil if there isn't one.
 func (w *WinCertStore) Intermediate() (*x509.Certificate, error) {
-	//TODO(b/70786648) parameterize which cert store to use.
+	//TODO parameterize which cert store to use.
 	return w.cert(w.intermediateIssuer, my, certStoreCurrentUser)
 }
 
