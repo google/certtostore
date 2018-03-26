@@ -34,8 +34,8 @@ import (
 	"unicode/utf16"
 	"unsafe"
 
-	"github.com/golang/sys/windows/windows"
-	"github.com/google/logger/logger"
+	"github.com/golang/sys/windows"
+	"github.com/google/logger"
 )
 
 const (

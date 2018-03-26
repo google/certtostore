@@ -21,7 +21,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/StackExchange/wmi/wmi"
+	"github.com/StackExchange/wmi"
 )
 
 // User will obtain the current user from the OS.
