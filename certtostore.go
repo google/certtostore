@@ -26,7 +26,6 @@ import (
 	"io/ioutil"
 	"os"
 	"path/filepath"
-	"strings"
 )
 
 const (
@@ -131,25 +130,6 @@ func certFromDisk(filename string) (*x509.Certificate, error) {
 		return nil, fmt.Errorf("file %q is not recognized as a certificate", filename)
 	}
 	return xc, nil
-}
-
-// SANCheck checks that the subject alternative name matches the hostname
-func SANCheck(c *x509.Certificate) error {
-	if len(c.DNSNames) < 1 {
-		return fmt.Errorf("certificate does not contain a SAN")
-	}
-
-	cs, err := CompInfo()
-	if err != nil {
-		return fmt.Errorf("could not discover computer information: %v", err)
-	}
-
-	lhostname := strings.ToLower(cs.DNSHostName) + "." + strings.ToLower(cs.Domain)
-	chostname := c.DNSNames[0]
-	if lhostname != chostname {
-		return fmt.Errorf("certificate SAN [%q] and Hostname [%q] do not match", chostname, lhostname)
-	}
-	return nil
 }
 
 // PEMToX509 takes a raw PEM certificate and decodes it to an x509.Certificate.
