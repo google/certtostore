@@ -169,7 +169,7 @@ func findCert(store windows.Handle, enc, findFlags, findType uint32, para *uint1
 // intendedKeyUsage wraps CertGetIntendedKeyUsage. If there are key usage bytes they will be returned,
 // otherwise 0 will be returned. The final parameter (2) represents the size in bytes of &usage.
 func intendedKeyUsage(enc uint32, cert *windows.CertContext) (usage uint16) {
-	certGetIntendedKeyUsage.Call(uintptr(enc), cert.CertInfo, uintptr(unsafe.Pointer(&usage)), 2)
+	certGetIntendedKeyUsage.Call(uintptr(enc), uintptr(unsafe.Pointer(cert.CertInfo)), uintptr(unsafe.Pointer(&usage)), 2)
 	return
 }
 
