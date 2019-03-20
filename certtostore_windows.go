@@ -175,16 +175,16 @@ func intendedKeyUsage(enc uint32, cert *windows.CertContext) (usage uint16) {
 
 // WinCertStore is a CertStorage implementation for the Windows Certificate Store.
 type WinCertStore struct {
-	CStore             windows.Handle
-	Prov               uintptr
-	ProvName           string
-	issuer             string
-	intermediateIssuer string
-	container          string
+	CStore              windows.Handle
+	Prov                uintptr
+	ProvName            string
+	issuers             []string
+	intermediateIssuers []string
+	container           string
 }
 
 // OpenWinCertStore creates a WinCertStore.
-func OpenWinCertStore(provider, issuer, intermediateIssuer, container string) (*WinCertStore, error) {
+func OpenWinCertStore(provider, container string, issuers, intermediateIssuers []string) (*WinCertStore, error) {
 	// Open a handle to the crypto provider we will use for private key operations
 	cngProv, err := openProvider(provider)
 	if err != nil {
@@ -192,28 +192,23 @@ func OpenWinCertStore(provider, issuer, intermediateIssuer, container string) (*
 	}
 
 	wcs := &WinCertStore{
-		Prov:               cngProv,
-		ProvName:           provider,
-		issuer:             issuer,
-		intermediateIssuer: intermediateIssuer,
-		container:          container,
+		Prov:                cngProv,
+		ProvName:            provider,
+		issuers:             issuers,
+		intermediateIssuers: intermediateIssuers,
+		container:           container,
 	}
 	return wcs, nil
 }
 
 // Cert returns the current cert associated with this WinCertStore or nil if there isn't one.
 func (w *WinCertStore) Cert() (*x509.Certificate, error) {
-	return w.cert(w.issuer, my, certStoreLocalMachine)
+	return w.cert(w.issuers, my, certStoreLocalMachine)
 }
 
 // cert is used by the exported Cert, Intermediate and root functions to lookup certificates.
 // store is used to specify which store to perform the lookup in (system or user).
-func (w *WinCertStore) cert(issuer string, searchRoot *uint16, store uint32) (*x509.Certificate, error) {
-	i, err := windows.UTF16PtrFromString(issuer)
-	if err != nil {
-		return nil, err
-	}
-
+func (w *WinCertStore) cert(issuers []string, searchRoot *uint16, store uint32) (*x509.Certificate, error) {
 	// Open a handle to the system cert store
 	certStore, err := windows.CertOpenStore(
 		certStoreProvSystem,
@@ -228,7 +223,12 @@ func (w *WinCertStore) cert(issuer string, searchRoot *uint16, store uint32) (*x
 
 	var prev *windows.CertContext
 	var cert *x509.Certificate
-	for {
+	for _, issuer := range issuers {
+		i, err := windows.UTF16PtrFromString(issuer)
+		if err != nil {
+			return nil, err
+		}
+
 		// pass 0 as the third parameter because it is not used
 		// https://msdn.microsoft.com/en-us/library/windows/desktop/aa376064(v=vs.85).aspx
 		nc, err := findCert(certStore, encodingX509ASN|encodingPKCS7, 0, findIssuerStr, i, prev)
@@ -237,7 +237,7 @@ func (w *WinCertStore) cert(issuer string, searchRoot *uint16, store uint32) (*x
 		}
 		if nc == nil {
 			// No certificate found
-			return nil, nil
+			continue
 		}
 		prev = nc
 		if (intendedKeyUsage(encodingX509ASN, nc) & signatureKeyUsage) == 0 {
@@ -259,13 +259,15 @@ func (w *WinCertStore) cert(issuer string, searchRoot *uint16, store uint32) (*x
 		cert = xc
 		break
 	}
-
+	if cert == nil {
+		return nil, nil
+	}
 	return cert, nil
 }
 
 // Link will associate the certificate installed in the system store to the user store.
 func (w *WinCertStore) Link() error {
-	cert, err := w.cert(w.issuer, my, certStoreLocalMachine)
+	cert, err := w.cert(w.issuers, my, certStoreLocalMachine)
 	if err != nil {
 		return fmt.Errorf("link: checking for existing machine certificates returned %v", err)
 	}
@@ -275,7 +277,7 @@ func (w *WinCertStore) Link() error {
 	}
 
 	// If the user cert is already there and matches the system cert, return early.
-	userCert, err := w.cert(w.issuer, my, certStoreCurrentUser)
+	userCert, err := w.cert(w.issuers, my, certStoreCurrentUser)
 	if err != nil {
 		return fmt.Errorf("link: checking for existing user certificates returned %v", err)
 	}
@@ -329,8 +331,20 @@ func (w *WinCertStore) Link() error {
 	return nil
 }
 
-// Remove removes a certificate issued by w.issuer from the user and/or system cert stores.
+// Remove removes certificates issued by any of w.issuers from the user and/or system cert stores.
+// If it is unable to remove any certificates, it returns an error.
 func (w *WinCertStore) Remove(removeSystem bool) error {
+	var err error
+	for _, issuer := range w.issuers {
+		if err = w.remove(issuer, removeSystem); err == nil {
+			return nil
+		}
+	}
+	return err
+}
+
+// remove removes a certificate issued by w.issuer from the user and/or system cert stores.
+func (w *WinCertStore) remove(issuer string, removeSystem bool) error {
 	userStore, err := windows.CertOpenStore(
 		certStoreProvSystem,
 		0,
@@ -347,10 +361,10 @@ func (w *WinCertStore) Remove(removeSystem bool) error {
 		encodingX509ASN|encodingPKCS7,
 		0,
 		findIssuerStr,
-		wide(w.issuer),
+		wide(issuer),
 		nil)
 	if err != nil {
-		return fmt.Errorf("remove: finding user certificate issued by %s failed: %v", w.issuer, err)
+		return fmt.Errorf("remove: finding user certificate issued by %s failed: %v", issuer, err)
 	}
 
 	if userCertContext != nil {
@@ -382,10 +396,10 @@ func (w *WinCertStore) Remove(removeSystem bool) error {
 		encodingX509ASN|encodingPKCS7,
 		0,
 		findIssuerStr,
-		wide(w.issuer),
+		wide(issuer),
 		nil)
 	if err != nil {
-		return fmt.Errorf("remove: finding system certificate issued by %s failed: %v", w.issuer, err)
+		return fmt.Errorf("remove: finding system certificate issued by %s failed: %v", issuer, err)
 	}
 
 	if systemCertContext != nil {
@@ -413,12 +427,12 @@ func removeCert(certContext *windows.CertContext) error {
 // WinCertStore or nil if there isn't one.
 func (w *WinCertStore) Intermediate() (*x509.Certificate, error) {
 	//TODO parameterize which cert store to use.
-	return w.cert(w.intermediateIssuer, my, certStoreCurrentUser)
+	return w.cert(w.intermediateIssuers, my, certStoreCurrentUser)
 }
 
 // Root returns the certificate issued by the specified issuer from the
 // root certificate store 'ROOT/Certificates'.
-func (w *WinCertStore) Root(issuer string) (*x509.Certificate, error) {
+func (w *WinCertStore) Root(issuer []string) (*x509.Certificate, error) {
 	return w.cert(issuer, root, certStoreLocalMachine)
 }
 
@@ -528,13 +542,13 @@ func decrypt(kh uintptr, blob []byte, padding oaepPaddingInfo, flags uint32) ([]
 	var size uint32
 	// Obtain the size of the decrypted data
 	r, _, err := nCryptDecrypt.Call(
-		kh, // hKey
+		kh,                                // hKey
 		uintptr(unsafe.Pointer(&blob[0])), // pbInput
 		uintptr(len(blob)),                // cbInput
 		uintptr(unsafe.Pointer(&padding)), // *pPaddingInfo
-		0, // pbOutput, must be null on first run
-		0, // cbOutput, ignored on first run
-		uintptr(unsafe.Pointer(&size)), // pcbResult
+		0,                                 // pbOutput, must be null on first run
+		0,                                 // cbOutput, ignored on first run
+		uintptr(unsafe.Pointer(&size)),    // pcbResult
 		uintptr(flags))
 	if r != 0 {
 		return nil, fmt.Errorf("NCryptDecrypt returned %X during size check: %v", r, err)
@@ -543,7 +557,7 @@ func decrypt(kh uintptr, blob []byte, padding oaepPaddingInfo, flags uint32) ([]
 	// Decrypt the message
 	plainText := make([]byte, size)
 	r, _, err = nCryptDecrypt.Call(
-		kh, // hKey
+		kh,                                     // hKey
 		uintptr(unsafe.Pointer(&blob[0])),      // pbInput
 		uintptr(len(blob)),                     // cbInput
 		uintptr(unsafe.Pointer(&padding)),      // *pPaddingInfo

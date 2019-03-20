@@ -20,7 +20,7 @@ import (
 	"io/ioutil"
 	"testing"
 
-	"github.com/google/certtostore/testdata/certtest"
+	"github.com/google/certtostore/certtest"
 )
 
 func TestFileStore(t *testing.T) {
