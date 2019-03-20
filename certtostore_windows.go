@@ -334,13 +334,12 @@ func (w *WinCertStore) Link() error {
 // Remove removes certificates issued by any of w.issuers from the user and/or system cert stores.
 // If it is unable to remove any certificates, it returns an error.
 func (w *WinCertStore) Remove(removeSystem bool) error {
-	var err error
 	for _, issuer := range w.issuers {
-		if err = w.remove(issuer, removeSystem); err == nil {
-			return nil
+		if err := w.remove(issuer, removeSystem); err != nil {
+			return err
 		}
 	}
-	return err
+	return nil
 }
 
 // remove removes a certificate issued by w.issuer from the user and/or system cert stores.
