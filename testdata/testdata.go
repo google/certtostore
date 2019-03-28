@@ -14,8 +14,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package certtest provides certificate-related data for tests.
-package certtest
+// Package testdata provides certificate-related data for tests.
+package testdata
 
 const (
 	// CertPEM is a PEM-encoded dummy certificate for testing.

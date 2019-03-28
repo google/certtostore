@@ -20,11 +20,11 @@ import (
 	"io/ioutil"
 	"testing"
 
-	"github.com/google/certtostore/certtest"
+	"github.com/google/certtostore/testdata"
 )
 
 func TestFileStore(t *testing.T) {
-	xc, err := PEMToX509([]byte(certtest.CertPEM))
+	xc, err := PEMToX509([]byte(testdata.CertPEM))
 	if err != nil {
 		t.Fatalf("error decoding test certificate: %v", err)
 	}
@@ -90,7 +90,7 @@ func TestFileStoreImplementation(t *testing.T) {
 }
 
 func TestPEMToX509(t *testing.T) {
-	xc, err := PEMToX509([]byte(certtest.CertPEM))
+	xc, err := PEMToX509([]byte(testdata.CertPEM))
 	if err != nil {
 		t.Fatalf("error decoding test certificate: %v", err)
 	}
