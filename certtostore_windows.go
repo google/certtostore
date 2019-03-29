@@ -34,7 +34,7 @@ import (
 	"unicode/utf16"
 	"unsafe"
 
-	"github.com/golang/sys/windows"
+	"golang.org/x/sys/windows"
 	"github.com/google/logger"
 )
 
