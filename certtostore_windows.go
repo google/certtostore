@@ -19,6 +19,8 @@ package certtostore
 import (
 	"bytes"
 	"crypto"
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rsa"
 	"crypto/x509"
 	"encoding/binary"
@@ -60,8 +62,11 @@ const (
 	// Legacy CryptoAPI flags
 	bCryptPadPKCS1 uintptr = 0x2
 
-	// Magic number for RSA1 public key blobs.
-	rsa1Magic = 0x31415352 // "RSA1"
+	// Magic numbers for public key blobs.
+	rsa1Magic = 0x31415352 // "RSA1" BCRYPT_RSAPUBLIC_MAGIC
+	ecs1Magic = 0x31534345 // "ECS1" BCRYPT_ECDSA_PUBLIC_P256_MAGIC
+	ecs3Magic = 0x33534345 // "ECS3" BCRYPT_ECDSA_PUBLIC_P384_MAGIC
+	ecs5Magic = 0x35534345 // "ECS5" BCRYPT_ECDSA_PUBLIC_P521_MAGIC
 
 	// ncrypt.h constants
 	ncryptPersistFlag      = 0x80000000 // NCRYPT_PERSIST_FLAG
@@ -85,7 +90,20 @@ const (
 )
 
 var (
+	// Key blob type constants.
 	bCryptRSAPublicBlob = wide("RSAPUBLICBLOB")
+	bCryptECCPublicBlob = wide("ECCPUBLICBLOB")
+
+	// Key storage properties
+	nCryptAlgorithmGroupProperty = wide("Algorithm Group") // NCRYPT_ALGORITHM_GROUP_PROPERTY
+	nCryptUniqueNameProperty     = wide("Unique Name")     // NCRYPT_UNIQUE_NAME_PROPERTY
+
+	// curveIDs maps bcrypt key blob magic numbers to elliptic curves.
+	curveIDs = map[uint32]elliptic.Curve{
+		ecs1Magic: elliptic.P256(), // BCRYPT_ECDSA_PUBLIC_P256_MAGIC
+		ecs3Magic: elliptic.P384(), // BCRYPT_ECDSA_PUBLIC_P384_MAGIC
+		ecs5Magic: elliptic.P521(), // BCRYPT_ECDSA_PUBLIC_P521_MAGIC
+	}
 
 	// algIDs maps crypto.Hash values to bcrypt.h constants.
 	algIDs = map[crypto.Hash]*uint16{
@@ -436,9 +454,10 @@ func (w *WinCertStore) Root(issuer []string) (*x509.Certificate, error) {
 
 // Key implements crypto.Signer and crypto.Decrypter for key based operations.
 type Key struct {
-	handle    uintptr
-	pub       *rsa.PublicKey
-	Container string
+	handle         uintptr
+	pub            crypto.PublicKey
+	Container      string
+	AlgorithmGroup string
 }
 
 // Public exports a public key to implement crypto.Signer
@@ -609,12 +628,12 @@ func (w *WinCertStore) Key() (*Key, error) {
 		return nil, fmt.Errorf("NCryptOpenKey for container %s returned %X: %v", w.container, r, err)
 	}
 
-	uc, pub, err := keyMetadata(kh, w)
+	uc, alg, pub, err := keyMetadata(kh, w)
 	if err != nil {
 		return nil, err
 	}
 
-	return &Key{handle: kh, pub: pub, Container: uc}, nil
+	return &Key{handle: kh, pub: pub, Container: uc, AlgorithmGroup: alg}, nil
 }
 
 // Generate returns a crypto.Signer representing either a TPM-backed or
@@ -674,19 +693,19 @@ func (w *WinCertStore) Generate(keySize int) (crypto.Signer, error) {
 		return nil, fmt.Errorf("NCryptFinalizeKey returned %X: %v", r, err)
 	}
 
-	uc, pub, err := keyMetadata(kh, w)
+	uc, alg, pub, err := keyMetadata(kh, w)
 	if err != nil {
 		return nil, err
 	}
 
-	return &Key{handle: kh, pub: pub, Container: uc}, nil
+	return &Key{handle: kh, pub: pub, Container: uc, AlgorithmGroup: alg}, nil
 }
 
-func keyMetadata(kh uintptr, store *WinCertStore) (string, *rsa.PublicKey, error) {
-	// uc is used to populate the container attribute of the private key
-	uc, err := container(kh)
+func keyMetadata(kh uintptr, store *WinCertStore) (string, string, crypto.PublicKey, error) {
+	// uc is used to populate the unique container name attribute of the private key
+	uc, err := getProperty(kh, nCryptUniqueNameProperty)
 	if err != nil {
-		return "", nil, err
+		return "", "", nil, err
 	}
 
 	// Adjust the key storage location if we have a software backed key
@@ -694,53 +713,72 @@ func keyMetadata(kh uintptr, store *WinCertStore) (string, *rsa.PublicKey, error
 		uc = os.Getenv("ProgramData") + `\Microsoft\Crypto\Keys\` + uc
 	}
 
-	pub, err := export(kh)
+	alg, err := getProperty(kh, nCryptAlgorithmGroupProperty)
 	if err != nil {
-		return "", nil, fmt.Errorf("failed to export public key: %v", err)
+		return "", "", nil, err
 	}
-
-	return uc, pub, nil
+	var pub crypto.PublicKey
+	switch alg {
+	case "ECDSA":
+		buf, err := export(kh, bCryptECCPublicBlob)
+		if err != nil {
+			return "", "", nil, fmt.Errorf("failed to export ECC public key: %v", err)
+		}
+		pub, err = unmarshalECC(buf)
+		if err != nil {
+			return "", "", nil, fmt.Errorf("failed to unmarshal ECC public key: %v", err)
+		}
+	default:
+		buf, err := export(kh, bCryptRSAPublicBlob)
+		if err != nil {
+			return "", "", nil, fmt.Errorf("failed to export %v public key: %v", alg, err)
+		}
+		pub, err = unmarshalRSA(buf)
+		if err != nil {
+			return "", "", nil, fmt.Errorf("failed to unmarshal %v public key: %v", alg, err)
+		}
+	}
+	return uc, alg, pub, nil
 }
 
-// container returns the unique container name of a private key
-func container(kh uintptr) (string, error) {
+func getProperty(kh uintptr, property *uint16) (string, error) {
 	var strSize uint32
 	r, _, err := nCryptGetProperty.Call(
 		kh,
-		uintptr(unsafe.Pointer(wide("Unique Name"))),
+		uintptr(unsafe.Pointer(property)),
 		0,
 		0,
 		uintptr(unsafe.Pointer(&strSize)),
 		0,
 		0)
 	if r != 0 {
-		return "", fmt.Errorf("NCryptGetProperty returned %X during size check, %v", r, err)
+		return "", fmt.Errorf("NCryptGetProperty %v returned %X during size check, %v", property, r, err)
 	}
 
 	buf := make([]byte, strSize)
 	r, _, err = nCryptGetProperty.Call(
 		kh,
-		uintptr(unsafe.Pointer(wide("Unique Name"))),
+		uintptr(unsafe.Pointer(property)),
 		uintptr(unsafe.Pointer(&buf[0])),
 		uintptr(strSize),
 		uintptr(unsafe.Pointer(&strSize)),
 		0,
 		0)
 	if r != 0 {
-		return "", fmt.Errorf("NCryptGetProperty returned %X during export, %v", r, err)
+		return "", fmt.Errorf("NCryptGetProperty %v returned %X during export, %v", property, r, err)
 	}
 
 	uc := strings.Replace(string(buf), string(0x00), "", -1)
 	return uc, nil
 }
 
-func export(kh uintptr) (*rsa.PublicKey, error) {
+func export(kh uintptr, blobType *uint16) ([]byte, error) {
 	var size uint32
 	// When obtaining the size of a public key, most parameters are not required
 	r, _, err := nCryptExportKey.Call(
 		kh,
 		0,
-		uintptr(unsafe.Pointer(bCryptRSAPublicBlob)),
+		uintptr(unsafe.Pointer(blobType)),
 		0,
 		0,
 		0,
@@ -755,7 +793,7 @@ func export(kh uintptr) (*rsa.PublicKey, error) {
 	r, _, err = nCryptExportKey.Call(
 		kh,
 		0,
-		uintptr(unsafe.Pointer(bCryptRSAPublicBlob)),
+		uintptr(unsafe.Pointer(blobType)),
 		0,
 		uintptr(unsafe.Pointer(&buf[0])),
 		uintptr(size),
@@ -764,11 +802,10 @@ func export(kh uintptr) (*rsa.PublicKey, error) {
 	if r != 0 {
 		return nil, fmt.Errorf("NCryptExportKey returned %X during export: %v", r, err)
 	}
-
-	return unmarshal(buf)
+	return buf, nil
 }
 
-func unmarshal(buf []byte) (*rsa.PublicKey, error) {
+func unmarshalRSA(buf []byte) (*rsa.PublicKey, error) {
 	// BCRYPT_RSA_BLOB from bcrypt.h
 	header := struct {
 		Magic         uint32
@@ -805,6 +842,41 @@ func unmarshal(buf []byte) (*rsa.PublicKey, error) {
 	pub := &rsa.PublicKey{
 		N: new(big.Int).SetBytes(mod),
 		E: int(binary.BigEndian.Uint64(exp)),
+	}
+	return pub, nil
+}
+
+func unmarshalECC(buf []byte) (*ecdsa.PublicKey, error) {
+	// BCRYPT_ECCKEY_BLOB from bcrypt.h
+	header := struct {
+		Magic uint32
+		Key   uint32
+	}{}
+
+	r := bytes.NewReader(buf)
+	if err := binary.Read(r, binary.LittleEndian, &header); err != nil {
+		return nil, err
+	}
+
+	curve, ok := curveIDs[header.Magic]
+	if !ok {
+		return nil, fmt.Errorf("unsupported header magic: %x", header.Magic)
+	}
+
+	keyX := make([]byte, header.Key)
+	if n, err := r.Read(keyX); n != int(header.Key) || err != nil {
+		return nil, fmt.Errorf("failed to read key X (%d, %v)", n, err)
+	}
+
+	keyY := make([]byte, header.Key)
+	if n, err := r.Read(keyY); n != int(header.Key) || err != nil {
+		return nil, fmt.Errorf("failed to read key Y (%d, %v)", n, err)
+	}
+
+	pub := &ecdsa.PublicKey{
+		Curve: curve,
+		X:     new(big.Int).SetBytes(keyX),
+		Y:     new(big.Int).SetBytes(keyY),
 	}
 	return pub, nil
 }
