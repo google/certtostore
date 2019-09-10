@@ -54,9 +54,6 @@ const (
 	compareShift            = 16                                              // CERT_COMPARE_SHIFT
 	findIssuerStr           = compareNameStrW<<compareShift | infoIssuerFlag  // CERT_FIND_ISSUER_STR_W
 	signatureKeyUsage       = 0x80                                            // CERT_DIGITAL_SIGNATURE_KEY_USAGE
-	acquireCached           = 0x1                                             // CRYPT_ACQUIRE_CACHE_FLAG
-	acquireSilent           = 0x40                                            // CRYPT_ACQUIRE_SILENT_FLAG
-	acquireOnlyNCryptKey    = 0x40000                                         // CRYPT_ACQUIRE_ONLY_NCRYPT_KEY_FLAG
 	ncryptKeySpec           = 0xFFFFFFFF                                      // CERT_NCRYPT_KEY_SPEC
 
 	// Legacy CryptoAPI flags
@@ -69,9 +66,10 @@ const (
 	ecs5Magic = 0x35534345 // "ECS5" BCRYPT_ECDSA_PUBLIC_P521_MAGIC
 
 	// ncrypt.h constants
-	ncryptPersistFlag      = 0x80000000 // NCRYPT_PERSIST_FLAG
-	ncryptAllowDecryptFlag = 0x1        // NCRYPT_ALLOW_DECRYPT_FLAG
-	ncryptAllowSigningFlag = 0x2        // NCRYPT_ALLOW_SIGNING_FLAG
+	ncryptPersistFlag           = 0x80000000 // NCRYPT_PERSIST_FLAG
+	ncryptAllowDecryptFlag      = 0x1        // NCRYPT_ALLOW_DECRYPT_FLAG
+	ncryptAllowSigningFlag      = 0x2        // NCRYPT_ALLOW_SIGNING_FLAG
+	ncryptWriteKeyToLegacyStore = 0x00000200 // NCRYPT_WRITE_KEY_TO_LEGACY_STORE_FLAG
 
 	// NCryptPadOAEPFlag is used with Decrypt to specify whether to use OAEP.
 	NCryptPadOAEPFlag = 0x00000004 // NCRYPT_PAD_OAEP_FLAG
@@ -199,10 +197,11 @@ type WinCertStore struct {
 	issuers             []string
 	intermediateIssuers []string
 	container           string
+	keyStorageFlags     uintptr
 }
 
 // OpenWinCertStore creates a WinCertStore.
-func OpenWinCertStore(provider, container string, issuers, intermediateIssuers []string) (*WinCertStore, error) {
+func OpenWinCertStore(provider, container string, issuers, intermediateIssuers []string, legacyKey bool) (*WinCertStore, error) {
 	// Open a handle to the crypto provider we will use for private key operations
 	cngProv, err := openProvider(provider)
 	if err != nil {
@@ -216,6 +215,10 @@ func OpenWinCertStore(provider, container string, issuers, intermediateIssuers [
 		intermediateIssuers: intermediateIssuers,
 		container:           container,
 	}
+	if legacyKey {
+		wcs.keyStorageFlags = ncryptWriteKeyToLegacyStore
+	}
+
 	return wcs, nil
 }
 
@@ -688,7 +691,7 @@ func (w *WinCertStore) Generate(keySize int) (crypto.Signer, error) {
 
 	// Set the second parameter to 0 because we require no flags
 	// https://msdn.microsoft.com/en-us/library/windows/desktop/aa376265(v=vs.85).aspx
-	r, _, err = nCryptFinalizeKey.Call(kh, 0)
+	r, _, err = nCryptFinalizeKey.Call(kh, w.keyStorageFlags)
 	if r != 0 {
 		return nil, fmt.Errorf("NCryptFinalizeKey returned %X: %v", r, err)
 	}
