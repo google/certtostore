@@ -85,6 +85,8 @@ const (
 	ProviderMSPlatform = "Microsoft Platform Crypto Provider"
 	// ProviderMSSoftware represents the Microsoft Software Key Storage Provider
 	ProviderMSSoftware = "Microsoft Software Key Storage Provider"
+	// ProviderMSLegacy represents the CryptoAPI compatible Enhanced Cryptographic Provider
+	ProviderMSLegacy = "Microsoft Enhanced Cryptographic Provider v1.0"
 )
 
 var (
@@ -215,8 +217,10 @@ func OpenWinCertStore(provider, container string, issuers, intermediateIssuers [
 		intermediateIssuers: intermediateIssuers,
 		container:           container,
 	}
+
 	if legacyKey {
 		wcs.keyStorageFlags = ncryptWriteKeyToLegacyStore
+		wcs.ProvName = ProviderMSLegacy
 	}
 
 	return wcs, nil
@@ -711,9 +715,14 @@ func keyMetadata(kh uintptr, store *WinCertStore) (string, string, crypto.Public
 		return "", "", nil, err
 	}
 
-	// Adjust the key storage location if we have a software backed key
+	// Adjust the key storage location if we have a CNG software backed key
 	if store.ProvName == ProviderMSSoftware {
 		uc = os.Getenv("ProgramData") + `\Microsoft\Crypto\Keys\` + uc
+	}
+
+	// Adjust the key storage location if we have a CryptoAPI software backed key
+	if store.ProvName == ProviderMSLegacy {
+		uc = os.Getenv("ProgramData") + `\Microsoft\Crypto\RSA\MachineKeys\` + uc
 	}
 
 	alg, err := getProperty(kh, nCryptAlgorithmGroupProperty)
