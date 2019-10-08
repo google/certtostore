@@ -42,6 +42,8 @@ import (
 
 const (
 	// wincrypt.h constants
+	acquireCached           = 0x1                                             // CRYPT_ACQUIRE_CACHE_FLAG
+	acquireSilent           = 0x40                                            // CRYPT_ACQUIRE_SILENT_FLAG
 	encodingX509ASN         = 1                                               // X509_ASN_ENCODING
 	encodingPKCS7           = 65536                                           // PKCS_7_ASN_ENCODING
 	certStoreProvSystem     = 10                                              // CERT_STORE_PROV_SYSTEM
@@ -123,19 +125,20 @@ var (
 	crypt32 = windows.MustLoadDLL("crypt32.dll")
 	nCrypt  = windows.MustLoadDLL("ncrypt.dll")
 
-	certDeleteCertificateFromStore  = crypt32.MustFindProc("CertDeleteCertificateFromStore")
-	certFindCertificateInStore      = crypt32.MustFindProc("CertFindCertificateInStore")
-	certGetIntendedKeyUsage         = crypt32.MustFindProc("CertGetIntendedKeyUsage")
-	cryptFindCertificateKeyProvInfo = crypt32.MustFindProc("CryptFindCertificateKeyProvInfo")
-	nCryptCreatePersistedKey        = nCrypt.MustFindProc("NCryptCreatePersistedKey")
-	nCryptDecrypt                   = nCrypt.MustFindProc("NCryptDecrypt")
-	nCryptExportKey                 = nCrypt.MustFindProc("NCryptExportKey")
-	nCryptFinalizeKey               = nCrypt.MustFindProc("NCryptFinalizeKey")
-	nCryptOpenKey                   = nCrypt.MustFindProc("NCryptOpenKey")
-	nCryptOpenStorageProvider       = nCrypt.MustFindProc("NCryptOpenStorageProvider")
-	nCryptGetProperty               = nCrypt.MustFindProc("NCryptGetProperty")
-	nCryptSetProperty               = nCrypt.MustFindProc("NCryptSetProperty")
-	nCryptSignHash                  = nCrypt.MustFindProc("NCryptSignHash")
+	certDeleteCertificateFromStore    = crypt32.MustFindProc("CertDeleteCertificateFromStore")
+	certFindCertificateInStore        = crypt32.MustFindProc("CertFindCertificateInStore")
+	certGetIntendedKeyUsage           = crypt32.MustFindProc("CertGetIntendedKeyUsage")
+	cryptAcquireCertificatePrivateKey = crypt32.MustFindProc("CryptAcquireCertificatePrivateKey")
+	cryptFindCertificateKeyProvInfo   = crypt32.MustFindProc("CryptFindCertificateKeyProvInfo")
+	nCryptCreatePersistedKey          = nCrypt.MustFindProc("NCryptCreatePersistedKey")
+	nCryptDecrypt                     = nCrypt.MustFindProc("NCryptDecrypt")
+	nCryptExportKey                   = nCrypt.MustFindProc("NCryptExportKey")
+	nCryptFinalizeKey                 = nCrypt.MustFindProc("NCryptFinalizeKey")
+	nCryptOpenKey                     = nCrypt.MustFindProc("NCryptOpenKey")
+	nCryptOpenStorageProvider         = nCrypt.MustFindProc("NCryptOpenStorageProvider")
+	nCryptGetProperty                 = nCrypt.MustFindProc("NCryptGetProperty")
+	nCryptSetProperty                 = nCrypt.MustFindProc("NCryptSetProperty")
+	nCryptSignHash                    = nCrypt.MustFindProc("NCryptSignHash")
 )
 
 // paddingInfo is the BCRYPT_PKCS1_PADDING_INFO struct in bcrypt.h.
@@ -566,13 +569,13 @@ func decrypt(kh uintptr, blob []byte, padding oaepPaddingInfo, flags uint32) ([]
 	var size uint32
 	// Obtain the size of the decrypted data
 	r, _, err := nCryptDecrypt.Call(
-		kh,                                // hKey
-		uintptr(unsafe.Pointer(&blob[0])), // pbInput
-		uintptr(len(blob)),                // cbInput
-		uintptr(unsafe.Pointer(&padding)), // *pPaddingInfo
-		0,                                 // pbOutput, must be null on first run
-		0,                                 // cbOutput, ignored on first run
-		uintptr(unsafe.Pointer(&size)),    // pcbResult
+		kh,
+		uintptr(unsafe.Pointer(&blob[0])),
+		uintptr(len(blob)),
+		uintptr(unsafe.Pointer(&padding)),
+		0, // Must be null on first run.
+		0, // Ignored on first run.
+		uintptr(unsafe.Pointer(&size)),
 		uintptr(flags))
 	if r != 0 {
 		return nil, fmt.Errorf("NCryptDecrypt returned %X during size check: %v", r, err)
@@ -581,13 +584,13 @@ func decrypt(kh uintptr, blob []byte, padding oaepPaddingInfo, flags uint32) ([]
 	// Decrypt the message
 	plainText := make([]byte, size)
 	r, _, err = nCryptDecrypt.Call(
-		kh,                                     // hKey
-		uintptr(unsafe.Pointer(&blob[0])),      // pbInput
-		uintptr(len(blob)),                     // cbInput
-		uintptr(unsafe.Pointer(&padding)),      // *pPaddingInfo
-		uintptr(unsafe.Pointer(&plainText[0])), // pbOutput, must be null on first run
-		uintptr(size),                          // cbOutput, ignored on first run
-		uintptr(unsafe.Pointer(&size)),         // pcbResult
+		kh,
+		uintptr(unsafe.Pointer(&blob[0])),
+		uintptr(len(blob)),
+		uintptr(unsafe.Pointer(&padding)),
+		uintptr(unsafe.Pointer(&plainText[0])),
+		uintptr(size),
+		uintptr(unsafe.Pointer(&size)),
 		uintptr(flags))
 	if r != 0 {
 		return nil, fmt.Errorf("NCryptDecrypt returned %X during decryption: %v", r, err)
@@ -635,12 +638,39 @@ func (w *WinCertStore) Key() (*Key, error) {
 		return nil, fmt.Errorf("NCryptOpenKey for container %s returned %X: %v", w.container, r, err)
 	}
 
-	uc, alg, pub, err := keyMetadata(kh, w)
-	if err != nil {
-		return nil, err
+	return keyMetadata(kh, w)
+}
+
+// CertKey wraps CryptAcquireCertificatePrivateKey. It obtains the private
+// key of a known certificate, and returns a pointer to a Key which implements
+// both crypto.Signer and crypto.Decrypter.
+// https://docs.microsoft.com/en-us/windows/win32/api/wincrypt/nf-wincrypt-cryptacquirecertificateprivatekey
+func (w *WinCertStore) CertKey(cert *windows.CertContext) (*Key, error) {
+	var (
+		kh       uintptr
+		spec     uint32
+		mustFree int
+	)
+	r, _, err := cryptAcquireCertificatePrivateKey.Call(
+		uintptr(unsafe.Pointer(cert)),
+		acquireCached|acquireSilent,
+		0, // Reserved, must be null.
+		uintptr(unsafe.Pointer(&kh)),
+		uintptr(unsafe.Pointer(&spec)),
+		uintptr(unsafe.Pointer(&mustFree)),
+	)
+	// If the function succeeds, the return value is nonzero (TRUE).
+	if r == 0 {
+		return nil, fmt.Errorf("cryptAcquireCertificatePrivateKey returned: %x %v", r, err)
+	}
+	if mustFree != 0 {
+		return nil, fmt.Errorf("wrong mustFree [%d != 0]", mustFree)
+	}
+	if spec != ncryptKeySpec {
+		return nil, fmt.Errorf("wrong keySpec [%d != %d]", spec, ncryptKeySpec)
 	}
 
-	return &Key{handle: kh, pub: pub, Container: uc, AlgorithmGroup: alg}, nil
+	return keyMetadata(kh, w)
 }
 
 // Generate returns a crypto.Signer representing either a TPM-backed or
@@ -700,19 +730,14 @@ func (w *WinCertStore) Generate(keySize int) (crypto.Signer, error) {
 		return nil, fmt.Errorf("NCryptFinalizeKey returned %X: %v", r, err)
 	}
 
-	uc, alg, pub, err := keyMetadata(kh, w)
-	if err != nil {
-		return nil, err
-	}
-
-	return &Key{handle: kh, pub: pub, Container: uc, AlgorithmGroup: alg}, nil
+	return keyMetadata(kh, w)
 }
 
-func keyMetadata(kh uintptr, store *WinCertStore) (string, string, crypto.PublicKey, error) {
+func keyMetadata(kh uintptr, store *WinCertStore) (*Key, error) {
 	// uc is used to populate the unique container name attribute of the private key
 	uc, err := getProperty(kh, nCryptUniqueNameProperty)
 	if err != nil {
-		return "", "", nil, err
+		return nil, err
 	}
 
 	// Adjust the key storage location if we have a CNG software backed key
@@ -727,30 +752,30 @@ func keyMetadata(kh uintptr, store *WinCertStore) (string, string, crypto.Public
 
 	alg, err := getProperty(kh, nCryptAlgorithmGroupProperty)
 	if err != nil {
-		return "", "", nil, err
+		return nil, err
 	}
 	var pub crypto.PublicKey
 	switch alg {
 	case "ECDSA":
 		buf, err := export(kh, bCryptECCPublicBlob)
 		if err != nil {
-			return "", "", nil, fmt.Errorf("failed to export ECC public key: %v", err)
+			return nil, fmt.Errorf("failed to export ECC public key: %v", err)
 		}
 		pub, err = unmarshalECC(buf)
 		if err != nil {
-			return "", "", nil, fmt.Errorf("failed to unmarshal ECC public key: %v", err)
+			return nil, fmt.Errorf("failed to unmarshal ECC public key: %v", err)
 		}
 	default:
 		buf, err := export(kh, bCryptRSAPublicBlob)
 		if err != nil {
-			return "", "", nil, fmt.Errorf("failed to export %v public key: %v", alg, err)
+			return nil, fmt.Errorf("failed to export %v public key: %v", alg, err)
 		}
 		pub, err = unmarshalRSA(buf)
 		if err != nil {
-			return "", "", nil, fmt.Errorf("failed to unmarshal %v public key: %v", alg, err)
+			return nil, fmt.Errorf("failed to unmarshal %v public key: %v", alg, err)
 		}
 	}
-	return uc, alg, pub, nil
+	return &Key{handle: kh, pub: pub, Container: uc, AlgorithmGroup: alg}, nil
 }
 
 func getProperty(kh uintptr, property *uint16) (string, error) {
