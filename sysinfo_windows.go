@@ -20,6 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/user"
 
 	"github.com/StackExchange/wmi"
 )
@@ -30,6 +31,18 @@ func User() (string, error) {
 		return u, nil
 	}
 	return "", errors.New("could not determine the user")
+}
+
+// UserSID will obtain the SID of the current user from the OS.
+func UserSID() (string, error) {
+	u, err := user.Current()
+	if err != nil {
+		return "", fmt.Errorf("could not determine the user: %v", err)
+	}
+	if u.Uid == "" {
+		return "", fmt.Errorf("SID for %q was blank", u.Username)
+	}
+	return u.Uid, nil
 }
 
 // Constants for DomainRole
