@@ -658,28 +658,33 @@ func decrypt(kh uintptr, blob []byte, padding oaepPaddingInfo, flags uint32) ([]
 	return plainText[:size], nil
 }
 
-// SetACL sets permissions for the private key by wrapping the Microsoft
-// icacls utility. For CNG keys (even TPM backed keys), access is controlled
-// by NTFS ACLs. icacls is used for simple ACL setting versus more complicated
-// API calls.
-func (k *Key) SetACL(store *WinCertStore, access string, sid string, perm string) error {
-	loc := k.Container
-	logger.Infof("running: icacls.exe %s /%s %s:%s", loc, access, sid, perm)
+// SetACL sets the requested permissions on the private key. If a
+// cryptoAPI compatible copy of the key is present, the same ACL is set.
+func (k *Key) SetACL(access string, sid string, perm string) error {
+	if err := setACL(k.Container, access, sid, perm); err != nil {
+		return err
+	}
+	if k.legacyContainer == "" {
+		return nil
+	}
+	return setACL(k.legacyContainer, access, sid, perm)
+}
 
-	// Run icacls as specified, parameter validation prior to this point isn't
-	// needed because icacls handles this on its own
-	err := exec.Command("icacls.exe", loc, "/"+access, sid+":"+perm).Run()
-
+// setACL sets permissions for the private key by wrapping the Microsoft
+// icacls utility. icacls is used for simplicity working with NTFS ACLs.
+func setACL(file, access, sid, perm string) error {
+	logger.Infof("running: icacls.exe %s /%s %s:%s", file, access, sid, perm)
+	// Parameter validation isn't required, icacls handles this on its own.
+	err := exec.Command("icacls.exe", file, "/"+access, sid+":"+perm).Run()
 	// Error 1798 can safely be ignored, because it occurs when trying to set an acl
 	// for a non-existend sid, which only happens for certain permissions needed on later
-	// versions of Windows, which are not needed on Windows 7.
+	// versions of Windows.
 	if err, ok := err.(*exec.ExitError); ok && strings.Contains(err.Error(), "1798") == false {
-		logger.Infof("ignoring error while %sing '%s' access to %s for sid: %v", access, perm, loc, sid)
+		logger.Infof("ignoring error while %sing '%s' access to %s for sid: %v", access, perm, file, sid)
 		return nil
 	} else if err != nil {
-		return fmt.Errorf("certstorage.SetFileACL is unable to %s %s access on %s to sid %s, %v", access, perm, loc, sid, err)
+		return fmt.Errorf("certstorage.SetFileACL is unable to %s %s access on %s to sid %s, %v", access, perm, file, sid, err)
 	}
-
 	return nil
 }
 
