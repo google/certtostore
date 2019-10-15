@@ -395,7 +395,7 @@ func (w *WinCertStore) linkLegacy() error {
 	if k == nil {
 		return errors.New("private key lookup returned: nil")
 	}
-	if k.legacyContainer == "" {
+	if k.LegacyContainer == "" {
 		return fmt.Errorf("unable to find legacy private key for %s: container was empty", cert.SerialNumber)
 	}
 
@@ -404,14 +404,14 @@ func (w *WinCertStore) linkLegacy() error {
 	if err != nil {
 		return fmt.Errorf("unable to determine user SID: %v", err)
 	}
-	_, file := filepath.Split(k.legacyContainer)
+	_, file := filepath.Split(k.LegacyContainer)
 	userContainer := fmt.Sprintf(`%s\Microsoft\Crypto\RSA\%s\%s`, os.Getenv("AppData"), sid, file)
 
 	// Link the private key to the users private key store.
-	if err = copyFile(k.legacyContainer, userContainer); err != nil {
+	if err = copyFile(k.LegacyContainer, userContainer); err != nil {
 		return err
 	}
-	logger.Infof("Legacy key %q was located and linked to the user store.", k.legacyContainer)
+	logger.Infof("Legacy key %q was located and linked to the user store.", k.LegacyContainer)
 	return nil
 }
 
@@ -525,7 +525,7 @@ type Key struct {
 	handle          uintptr
 	pub             crypto.PublicKey
 	Container       string
-	legacyContainer string
+	LegacyContainer string
 	AlgorithmGroup  string
 }
 
@@ -664,10 +664,10 @@ func (k *Key) SetACL(access string, sid string, perm string) error {
 	if err := setACL(k.Container, access, sid, perm); err != nil {
 		return err
 	}
-	if k.legacyContainer == "" {
+	if k.LegacyContainer == "" {
 		return nil
 	}
-	return setACL(k.legacyContainer, access, sid, perm)
+	return setACL(k.LegacyContainer, access, sid, perm)
 }
 
 // setACL sets permissions for the private key by wrapping the Microsoft
@@ -839,7 +839,7 @@ func keyMetadata(kh uintptr, store *WinCertStore) (*Key, error) {
 		}
 	}
 
-	return &Key{handle: kh, pub: pub, Container: uc, legacyContainer: lc, AlgorithmGroup: alg}, nil
+	return &Key{handle: kh, pub: pub, Container: uc, LegacyContainer: lc, AlgorithmGroup: alg}, nil
 }
 
 func getProperty(kh uintptr, property *uint16) (string, error) {
