@@ -93,6 +93,12 @@ const (
 	ProviderMSSoftware = "Microsoft Software Key Storage Provider"
 	// ProviderMSLegacy represents the CryptoAPI compatible Enhanced Cryptographic Provider
 	ProviderMSLegacy = "Microsoft Enhanced Cryptographic Provider v1.0"
+
+	// Chain resolution constants
+	hcceLocalMachine                  = windows.Handle(0x01) // HCCE_LOCAL_MACHINE
+	certChainCacheOnlyURLRetrieval    = 0x00000004           // CERT_CHAIN_CACHE_ONLY_URL_RETRIEVAL
+	certChainDisableAIA               = 0x00002000           // CERT_CHAIN_DISABLE_AIA
+	certChainRevocationCheckCacheOnly = 0x80000000           // CERT_CHAIN_REVOCATION_CHECK_CACHE_ONLY
 )
 
 var (
@@ -131,6 +137,8 @@ var (
 
 	certDeleteCertificateFromStore    = crypt32.MustFindProc("CertDeleteCertificateFromStore")
 	certFindCertificateInStore        = crypt32.MustFindProc("CertFindCertificateInStore")
+	certFreeCertificateChain          = crypt32.MustFindProc("CertFreeCertificateChain")
+	certGetCertificateChain           = crypt32.MustFindProc("CertGetCertificateChain")
 	certGetIntendedKeyUsage           = crypt32.MustFindProc("CertGetIntendedKeyUsage")
 	cryptAcquireCertificatePrivateKey = crypt32.MustFindProc("CryptAcquireCertificatePrivateKey")
 	cryptFindCertificateKeyProvInfo   = crypt32.MustFindProc("CryptFindCertificateKeyProvInfo")
@@ -207,6 +215,7 @@ type WinCertStore struct {
 	intermediateIssuers []string
 	container           string
 	keyStorageFlags     uintptr
+	certChains          [][]*x509.Certificate
 }
 
 // OpenWinCertStore creates a WinCertStore.
@@ -233,10 +242,87 @@ func OpenWinCertStore(provider, container string, issuers, intermediateIssuers [
 	return wcs, nil
 }
 
+// certContextToX509 creates an x509.Certificate from a Windows cert context.
+func certContextToX509(ctx *windows.CertContext) (*x509.Certificate, error) {
+	var der []byte
+	slice := (*reflect.SliceHeader)(unsafe.Pointer(&der))
+	slice.Data = uintptr(unsafe.Pointer(ctx.EncodedCert))
+	slice.Len = int(ctx.Length)
+	slice.Cap = int(ctx.Length)
+	return x509.ParseCertificate(der)
+}
+
+// extractSimpleChain extracts the requested certificate chain from a CertSimpleChain.
+// Adapted from crypto.x509.root_windows
+func extractSimpleChain(simpleChain **windows.CertSimpleChain, chainCount, chainIndex int) ([]*x509.Certificate, error) {
+	if simpleChain == nil || chainCount == 0 || chainIndex >= chainCount {
+		return nil, errors.New("invalid simple chain")
+	}
+	// Convert the simpleChain array to a huge slice and slice it to the length we want.
+	// https://github.com/golang/go/wiki/cgo#turning-c-arrays-into-go-slices
+	simpleChains := (*[1 << 20]*windows.CertSimpleChain)(unsafe.Pointer(simpleChain))[:chainCount:chainCount]
+	// Each simple chain contains the chain of certificates, summary trust information
+	// about the chain, and trust information about each certificate element in the chain.
+	lastChain := simpleChains[chainIndex]
+	chainLen := int(lastChain.NumElements)
+	elements := (*[1 << 20]*windows.CertChainElement)(unsafe.Pointer(lastChain.Elements))[:chainLen:chainLen]
+	chain := make([]*x509.Certificate, 0, chainLen)
+	for _, element := range elements {
+		xc, err := certContextToX509(element.CertContext)
+		if err != nil {
+			return nil, err
+		}
+		chain = append(chain, xc)
+	}
+	return chain, nil
+}
+
+// resolveCertChains builds chains to roots from a given certificate using the local machine store.
+func (w *WinCertStore) resolveChains(cert *windows.CertContext) error {
+	var (
+		chainPara windows.CertChainPara
+		chainCtx  *windows.CertChainContext
+	)
+
+	// Search the system for candidate certificate chains.
+	chainPara.Size = uint32(unsafe.Sizeof(chainPara))
+	success, _, err := certGetCertificateChain.Call(
+		uintptr(unsafe.Pointer(hcceLocalMachine)),
+		uintptr(unsafe.Pointer(cert)),
+		uintptr(unsafe.Pointer(nil)), // Use current system time as validation time.
+		uintptr(cert.Store),
+		uintptr(unsafe.Pointer(&chainPara)),
+		certChainRevocationCheckCacheOnly|certChainCacheOnlyURLRetrieval|certChainDisableAIA,
+		uintptr(unsafe.Pointer(nil)), // Reserved.
+		uintptr(unsafe.Pointer(&chainCtx)),
+	)
+	if success == 0 {
+		return fmt.Errorf("certGetCertificateChain: %v", err)
+	}
+	defer certFreeCertificateChain.Call(uintptr(unsafe.Pointer(chainCtx)))
+
+	chainCount := int(chainCtx.ChainCount)
+	certChains := make([][]*x509.Certificate, 0, chainCount)
+	for i := 0; i < chainCount; i++ {
+		x509Certs, err := extractSimpleChain(chainCtx.Chains, chainCount, i)
+		if err != nil {
+			return fmt.Errorf("extractSimpleChain: %v", err)
+		}
+		certChains = append(certChains, x509Certs)
+	}
+	return nil
+}
+
 // Cert returns the current cert associated with this WinCertStore or nil if there isn't one.
 func (w *WinCertStore) Cert() (*x509.Certificate, error) {
-	c, _, err := w.cert(w.issuers, my, certStoreLocalMachine)
-	return c, err
+	c, ctx, err := w.cert(w.issuers, my, certStoreLocalMachine)
+	if err != nil {
+		return nil, err
+	}
+	if err := w.resolveChains(ctx); err != nil {
+		return nil, err
+	}
+	return c, nil
 }
 
 // cert is a helper function to lookup certificates based on a known issuer.
@@ -278,13 +364,7 @@ func (w *WinCertStore) cert(issuers []string, searchRoot *uint16, store uint32) 
 		}
 
 		// Extract the DER-encoded certificate from the cert context.
-		var der []byte
-		slice := (*reflect.SliceHeader)(unsafe.Pointer(&der))
-		slice.Data = uintptr(unsafe.Pointer(nc.EncodedCert))
-		slice.Len = int(nc.Length)
-		slice.Cap = int(nc.Length)
-
-		xc, err := x509.ParseCertificate(der)
+		xc, err := certContextToX509(nc)
 		if err != nil {
 			continue
 		}
@@ -408,7 +488,7 @@ func (w *WinCertStore) linkLegacy() error {
 	userContainer := fmt.Sprintf(`%s\Microsoft\Crypto\RSA\%s\%s`, os.Getenv("AppData"), sid, file)
 
 	// Link the private key to the users private key store.
-	if err = copyFile(k.LegacyContainer, userContainer); err != nil {
+	if err := copyFile(k.LegacyContainer, userContainer); err != nil {
 		return err
 	}
 	logger.Infof("Legacy key %q was located and linked to the user store.", k.LegacyContainer)
@@ -520,6 +600,21 @@ func (w *WinCertStore) Root(issuer []string) (*x509.Certificate, error) {
 	return c, err
 }
 
+// CertificateChain returns the leaf and subsequent certificates.
+func (w *WinCertStore) CertificateChain() ([][]*x509.Certificate, error) {
+	// TODO: Once https://github.com/golang/go/issues/34977 is resolved
+	//       use certificateChain() instead.
+	cert, err := w.Cert()
+	if err != nil {
+		return nil, fmt.Errorf("unable to load leaf: %v", err)
+	}
+	if cert == nil {
+		return nil, fmt.Errorf("load leaf: no certificate found")
+	}
+	// Calling Cert() builds certChains.
+	return w.certChains, nil
+}
+
 // Key implements crypto.Signer and crypto.Decrypter for key based operations.
 type Key struct {
 	handle          uintptr
@@ -530,12 +625,12 @@ type Key struct {
 }
 
 // Public exports a public key to implement crypto.Signer
-func (k *Key) Public() crypto.PublicKey {
+func (k Key) Public() crypto.PublicKey {
 	return k.pub
 }
 
 // Sign returns the signature of a hash to implement crypto.Signer
-func (k *Key) Sign(rand io.Reader, digest []byte, opts crypto.SignerOpts) ([]byte, error) {
+func (k Key) Sign(rand io.Reader, digest []byte, opts crypto.SignerOpts) ([]byte, error) {
 	hf := opts.HashFunc()
 	algID, ok := algIDs[hf]
 	if !ok {
@@ -600,7 +695,7 @@ type oaepPaddingInfo struct {
 
 // Decrypt returns the decrypted contents of the encrypted blob, and implements
 // crypto.Decrypter for Key.
-func (k *Key) Decrypt(rand io.Reader, blob []byte, opts crypto.DecrypterOpts) ([]byte, error) {
+func (k Key) Decrypt(rand io.Reader, blob []byte, opts crypto.DecrypterOpts) ([]byte, error) {
 	decrypterOpts, ok := opts.(DecrypterOpts)
 	if !ok {
 		return nil, errors.New("opts was not certtostore.DecrypterOpts")
@@ -690,7 +785,7 @@ func setACL(file, access, sid, perm string) error {
 
 // Key opens a handle to an existing private key and returns key.
 // Key implements both crypto.Signer and crypto.Decrypter
-func (w *WinCertStore) Key() (*Key, error) {
+func (w *WinCertStore) Key() (Credential, error) {
 	var kh uintptr
 	r, _, err := nCryptOpenKey.Call(
 		uintptr(w.Prov),
@@ -1141,3 +1236,7 @@ func keyMatch(keyPath, dir string) (string, error) {
 	}
 	return "", nil
 }
+
+// Verify interface conformance.
+var _ CertStorage = &WinCertStore{}
+var _ Credential = &Key{}

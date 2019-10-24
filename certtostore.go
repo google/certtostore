@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package certtostore handles storage for certificates
+// Package certtostore handles storage for certificates.
 package certtostore
 
 import (
@@ -20,9 +20,11 @@ import (
 	"crypto"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/tls"
 	"crypto/x509"
 	"encoding/pem"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"os"
 	"path/filepath"
@@ -32,12 +34,14 @@ const (
 	createMode = os.FileMode(0600)
 )
 
-// CertStorage exposes the different backend storage options for certificates
+// CertStorage exposes the different backend storage options for certificates.
 type CertStorage interface {
 	// Cert returns the current X509 certificate or nil if no certificate is installed.
 	Cert() (*x509.Certificate, error)
 	// Intermediate returns the current intermediate X509 certificate or nil if no certificate is installed.
 	Intermediate() (*x509.Certificate, error)
+	// CertificateChain returns the leaf and subsequent certificates.
+	CertificateChain() ([][]*x509.Certificate, error)
 	// Generate generates a new private key in the storage and returns a signer that can be used
 	// to perform signatures with the new key and read the public portion of the key. CertStorage
 	// implementations should strive to ensure a Generate call doesn't actually destroy any current
@@ -46,28 +50,103 @@ type CertStorage interface {
 	// Store finishes the cert installation started by the last Generate call with the given cert and
 	// intermediate.
 	Store(cert *x509.Certificate, intermediate *x509.Certificate) error
+	// Key returns the certificate as a Credential (crypto.Signer and crypto.Decrypter).
+	Key() (Credential, error)
+}
+
+// certificateChain returns chains of the leaf and subsequent certificates.
+func certificateChain(cert, intermediate *x509.Certificate) ([][]*x509.Certificate, error) {
+	var intermediates *x509.CertPool
+	if intermediate != nil {
+		intermediates = x509.NewCertPool()
+		intermediates.AddCert(intermediate)
+	}
+	vo := x509.VerifyOptions{
+		Roots:         nil, // Use system roots
+		Intermediates: intermediates,
+	}
+	chains, err := cert.Verify(vo)
+	if err != nil {
+		// Fall back to a basic chain if the system cannot verify our chain (eg. if it is self signed).
+		return [][]*x509.Certificate{{cert, intermediate}}, nil
+	}
+	return chains, nil
+}
+
+// Credential provides access to a certificate and is a crypto.Signer and crypto.Decrypter.
+type Credential interface {
+	// Public returns the public key corresponding to the leaf certificate.
+	Public() crypto.PublicKey
+	// Sign signs digest with the private key.
+	Sign(rand io.Reader, digest []byte, opts crypto.SignerOpts) (signature []byte, err error)
+	// Decrypt decrypts msg. Returns an error if not implemented.
+	Decrypt(rand io.Reader, msg []byte, opts crypto.DecrypterOpts) (plaintext []byte, err error)
 }
 
 // FileStorage exposes the file storage (on disk) backend type for certificates.
 // The certificate id is used as the base of the filename within the basepath.
 type FileStorage struct {
-	path string
-	key  *rsa.PrivateKey
+	certFile   string
+	caCertFile string
+	keyFile    string
+	key        *rsa.PrivateKey
 }
 
-// NewFileStorage sets up a new file storage struct for use by StoreCert
+// NewFileStorage sets up a new file storage struct for use by StoreCert.
 func NewFileStorage(basepath string) *FileStorage {
-	return &FileStorage{path: basepath}
+	certFile := filepath.Join(basepath, "cert.crt")
+	caCertFile := filepath.Join(basepath, "cacert.crt")
+	keyFile := filepath.Join(basepath, "cert.key")
+	return &FileStorage{certFile: certFile, caCertFile: caCertFile, keyFile: keyFile}
+}
+
+// Key returns a Credential for the current FileStorage.
+func (f FileStorage) Key() (Credential, error) {
+	// Not every storage type implements Credential directly, this is an opportunity
+	// to construct and return a Credential in that case.  Here it is a no-op.
+	return f, nil
 }
 
 // Cert returns the FileStorage's current cert or nil if there is none.
-func (f *FileStorage) Cert() (*x509.Certificate, error) {
-	return certFromDisk(filepath.Join(f.path, "cert.crt"))
+func (f FileStorage) Cert() (*x509.Certificate, error) {
+	return certFromDisk(f.certFile)
+}
+
+// Public returns the public key corresponding to the leaf certificate or nil if there is none.
+func (f FileStorage) Public() crypto.PublicKey {
+	c, err := f.Cert()
+	if err != nil {
+		return nil
+	}
+	if c == nil {
+		return nil
+	}
+	pk, ok := c.PublicKey.(crypto.PublicKey)
+	if !ok {
+		return nil
+	}
+	return pk
 }
 
 // Intermediate returns the FileStorage's current intermediate cert or nil if there is none.
-func (f *FileStorage) Intermediate() (*x509.Certificate, error) {
-	return certFromDisk(filepath.Join(f.path, "cacert.crt"))
+func (f FileStorage) Intermediate() (*x509.Certificate, error) {
+	return certFromDisk(f.caCertFile)
+}
+
+// CertificateChain returns chains of the leaf and subsequent certificates.
+func (f FileStorage) CertificateChain() ([][]*x509.Certificate, error) {
+	cert, err := f.Cert()
+	if err != nil {
+		return nil, fmt.Errorf("CertificateChain load leaf: %v", err)
+	}
+	if cert == nil {
+		return nil, fmt.Errorf("CertificateChain load leaf: no certificate")
+	}
+	intermediate, err := f.Intermediate()
+	if err != nil {
+		return nil, fmt.Errorf("CertificateChain load intermediate: %v", err)
+	}
+	return certificateChain(cert, intermediate)
 }
 
 // Generate creates a new RSA private key and returns a signer that can be used to make a CSR for the key.
@@ -80,7 +159,7 @@ func (f *FileStorage) Generate(keySize int) (crypto.Signer, error) {
 // Store finishes our cert installation by PEM encoding the cert, intermediate, and key and storing them to disk.
 func (f *FileStorage) Store(cert *x509.Certificate, intermediate *x509.Certificate) error {
 	// Make sure our directory exists
-	if err := os.MkdirAll(filepath.Dir(f.path), createMode|0111); err != nil {
+	if err := os.MkdirAll(filepath.Dir(f.certFile), createMode|0111); err != nil {
 		return err
 	}
 
@@ -94,10 +173,10 @@ func (f *FileStorage) Store(cert *x509.Certificate, intermediate *x509.Certifica
 	}
 
 	// Write the certificates out to files
-	if err := ioutil.WriteFile(filepath.Join(f.path, "cert.crt"), certBuf.Bytes(), createMode); err != nil {
+	if err := ioutil.WriteFile(f.certFile, certBuf.Bytes(), createMode); err != nil {
 		return err
 	}
-	if err := ioutil.WriteFile(filepath.Join(f.path, "cacert.crt"), intermediateBuf.Bytes(), createMode); err != nil {
+	if err := ioutil.WriteFile(f.caCertFile, intermediateBuf.Bytes(), createMode); err != nil {
 		return err
 	}
 
@@ -110,7 +189,33 @@ func (f *FileStorage) Store(cert *x509.Certificate, intermediate *x509.Certifica
 		return fmt.Errorf("could not encode key to PEM: %v", err)
 	}
 
-	return ioutil.WriteFile(filepath.Join(f.path, "cert.key"), keyBuf.Bytes(), createMode)
+	return ioutil.WriteFile(f.keyFile, keyBuf.Bytes(), createMode)
+}
+
+// Sign returns a signature for the provided digest.
+func (f FileStorage) Sign(rand io.Reader, digest []byte, opts crypto.SignerOpts) ([]byte, error) {
+	tlsCert, err := tls.LoadX509KeyPair(f.certFile, f.keyFile)
+	if err != nil {
+		return nil, err
+	}
+	s, ok := tlsCert.PrivateKey.(crypto.Signer)
+	if !ok {
+		return nil, fmt.Errorf("x509 private key does not implement crypto.Signer")
+	}
+	return s.Sign(rand, digest, opts)
+}
+
+// Decrypt decrypts msg. Returns an error if not implemented.
+func (f FileStorage) Decrypt(rand io.Reader, msg []byte, opts crypto.DecrypterOpts) ([]byte, error) {
+	tlsCert, err := tls.LoadX509KeyPair(f.certFile, f.keyFile)
+	if err != nil {
+		return nil, err
+	}
+	s, ok := tlsCert.PrivateKey.(crypto.Decrypter)
+	if !ok {
+		return nil, fmt.Errorf("x509 private key does not implement crypto.Decrypter")
+	}
+	return s.Decrypt(rand, msg, opts)
 }
 
 // certFromDisk reads a x509.Certificate from a location on disk and
@@ -138,7 +243,9 @@ func PEMToX509(b []byte) (*x509.Certificate, error) {
 	if block == nil {
 		return nil, fmt.Errorf("unable to parse PEM certificate")
 	}
-
-	xc, err := x509.ParseCertificate(block.Bytes)
-	return xc, err
+	return x509.ParseCertificate(block.Bytes)
 }
+
+// Verify interface conformance.
+var _ CertStorage = &FileStorage{}
+var _ Credential = &FileStorage{}

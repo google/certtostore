@@ -15,27 +15,174 @@
 package certtostore
 
 import (
+	"crypto"
 	"crypto/rand"
+	"crypto/rsa"
+	"crypto/sha256"
 	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/base64"
+	"encoding/hex"
+	"fmt"
 	"io/ioutil"
+	"math/big"
 	"testing"
+	"time"
 
 	"github.com/google/certtostore/testdata"
 )
 
+// TODO: Create OS specific test packages to cover each
+// CertStorage implementation independently.
+
+func generateCertificate(caStore CertStorage) (CertStorage, error) {
+	dir, err := ioutil.TempDir("", "certstorage_cert_test")
+	if err != nil {
+		return nil, fmt.Errorf("ioutil.Tempdir: %v", err)
+	}
+	leafStore := NewFileStorage(dir)
+	// Create a leaf certificate request.
+	b := make([]byte, 8)
+	if _, err := rand.Read(b); err != nil {
+		return nil, fmt.Errorf("create random name: %v", err)
+	}
+	cn := hex.EncodeToString(b)
+	template := x509.Certificate{
+		SerialNumber: new(big.Int).SetBytes(b),
+		Subject: pkix.Name{
+			CommonName: cn,
+		},
+		NotBefore:             time.Now(),
+		NotAfter:              time.Now().Add(10 * time.Minute),
+		KeyUsage:              x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+		BasicConstraintsValid: true,
+		IsCA:                  false,
+		SignatureAlgorithm:    x509.SHA256WithRSA,
+	}
+	if _, err := leafStore.Generate(2048); err != nil {
+		return nil, fmt.Errorf("leafStore.Generate(2048): %v", err)
+	}
+	// Sign the leaf cert request with the CA certificate.
+	caCrt, err := caStore.Cert()
+	if err != nil {
+		return nil, fmt.Errorf("caStore.Cert: %v", err)
+	}
+	if caCrt == nil {
+		return nil, fmt.Errorf("could not read CA certificate")
+	}
+	caKey, err := caStore.Key()
+	if err != nil {
+		return nil, fmt.Errorf("caStore.Key: %v", err)
+	}
+	der, err := x509.CreateCertificate(rand.Reader, &template, caCrt, caKey.Public(), caKey)
+	if err != nil {
+		return nil, fmt.Errorf("x509.CreateCertificate: %v", err)
+	}
+	// Add the new leaf certificate to the leaf store.
+	leafCrt, err := x509.ParseCertificate(der)
+	if err != nil {
+		return nil, fmt.Errorf("x509.ParseCertificate: %v", err)
+	}
+	if err := leafStore.Store(leafCrt, caCrt); err != nil {
+		return nil, fmt.Errorf("leafStore.Store: %v", err)
+	}
+	return leafStore, nil
+}
+
+func TestCredential(t *testing.T) {
+	ca := NewFileStorage(testdata.CAPath())
+	// Use the CA CertStorage to issue a leaf cert.
+	leafStore, err := generateCertificate(ca)
+	if err != nil {
+		t.Fatalf("error generating certificate: %v", err)
+	}
+	// Retrieve the leaf cert.
+	leafCrt, err := leafStore.Cert()
+	if err != nil {
+		t.Fatalf("error retrieving certificate: %v", err)
+	}
+	// Retrieve a certificate and key for the CA.
+	caCrt, err := ca.Cert()
+	if err != nil {
+		t.Fatalf("error retrieving CA certificate: %v", err)
+	}
+	caKey, err := ca.Key()
+	if err != nil {
+		t.Fatalf("error retrieving CA credential: %v", err)
+	}
+	// Exercise CertificateChain.
+	chains, err := leafStore.CertificateChain()
+	if err != nil {
+		t.Fatalf("error retrieving certificate chain: %v", err)
+	}
+	for ci, chain := range chains {
+		for i, cert := range chain {
+			t.Logf("%d.%d: %s", ci, i, cert.Subject)
+		}
+	}
+	if len(chains) != 1 {
+		t.Fatalf("%d chains found, expected 1", len(chains))
+	}
+	if len(chains[0]) < 2 {
+		t.Fatalf("%d chain entries found, expected at least 2", len(chains[0]))
+	}
+	if !leafCrt.Equal(chains[0][0]) {
+		t.Errorf("certificate chain[0] is not the leaf")
+	}
+	if !caCrt.Equal(chains[0][1]) {
+		t.Errorf("certificate chain[1] is not the ca")
+	}
+	// Exercise the CA Public key by verifying the leaf cert.
+	caPub := caKey.Public()
+	if caPub == nil {
+		t.Fatal("CA public key not found")
+	}
+	rsaPub, ok := caPub.(*rsa.PublicKey)
+	if !ok {
+		t.Fatal("CA public key is not RSA")
+	}
+	leafHash := sha256.Sum256(leafCrt.RawTBSCertificate)
+	if err := rsa.VerifyPKCS1v15(rsaPub, crypto.SHA256, leafHash[:], leafCrt.Signature); err != nil {
+		t.Fatalf("error verifying certificate signature: %v", err)
+	}
+}
+
+func TestDecrypt(t *testing.T) {
+	ca := NewFileStorage(testdata.CAPath())
+	// Decrypt the test message.
+	caKey, err := ca.Key()
+	if err != nil {
+		t.Fatalf("error retrieving CA credential: %v", err)
+	}
+	msg, err := base64.StdEncoding.DecodeString(testdata.Ciphertext)
+	if err != nil {
+		t.Fatalf("error loading ciphertext: %v", err)
+	}
+	plaintext, err := caKey.Decrypt(rand.Reader, msg, nil)
+	if err != nil {
+		t.Fatalf("error decrypting ciphertext: %v", err)
+	}
+	if string(plaintext) != testdata.Plaintext {
+		t.Fatalf("plaintext '%v' does not match expected '%v'", string(plaintext), testdata.Plaintext)
+	}
+}
+
 func TestFileStore(t *testing.T) {
-	xc, err := PEMToX509([]byte(testdata.CertPEM))
+	pem, err := testdata.Certificate()
+	if err != nil {
+		t.Fatalf("testdata.Certificate: %v", err)
+	}
+	xc, err := PEMToX509(pem)
 	if err != nil {
 		t.Fatalf("error decoding test certificate: %v", err)
 	}
 
-	var tc CertStorage
 	dir, err := ioutil.TempDir("", "certstorage_test")
 	if err != nil {
 		t.Fatalf("failed to create temporary dir: %v", err)
 	}
-
-	tc = NewFileStorage(dir)
+	tc := NewFileStorage(dir)
 	cert, err := tc.Cert()
 	if err != nil {
 		t.Errorf("error while reading empty cert: %v", err)
@@ -82,15 +229,12 @@ func TestFileStore(t *testing.T) {
 	}
 }
 
-func TestFileStoreImplementation(t *testing.T) {
-	var fs interface{} = NewFileStorage("/tmp")
-	if _, ok := fs.(CertStorage); !ok {
-		t.Fatal("FileStorage does not implement CertStorage interface")
-	}
-}
-
 func TestPEMToX509(t *testing.T) {
-	xc, err := PEMToX509([]byte(testdata.CertPEM))
+	pem, err := testdata.Certificate()
+	if err != nil {
+		t.Fatalf("testdata.Certificate: %v", err)
+	}
+	xc, err := PEMToX509(pem)
 	if err != nil {
 		t.Fatalf("error decoding test certificate: %v", err)
 	}

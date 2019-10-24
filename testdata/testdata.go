@@ -17,28 +17,35 @@ limitations under the License.
 // Package testdata provides certificate-related data for tests.
 package testdata
 
-const (
-	// CertPEM is a PEM-encoded dummy certificate for testing.
-	CertPEM = `-----BEGIN CERTIFICATE-----
-MIIDoDCCAogCCQC5ZovJYecgKzANBgkqhkiG9w0BAQsFADCBkTELMAkGA1UEBhMC
-VVMxEzARBgNVBAgMCkNhbGlmb3JuaWExFjAUBgNVBAcMDU1vdW50YWluIFZpZXcx
-EjAQBgNVBAoMCUR1bW15IE9yZzERMA8GA1UECwwIRHVtbXkgT1UxDjAMBgNVBAMM
-BUR1bW15MR4wHAYJKoZIhvcNAQkBFg9kdW1teUBkdW1teS5jb20wHhcNMTcwODIy
-MTc0ODMyWhcNMjAwNTE5MTc0ODMyWjCBkTELMAkGA1UEBhMCVVMxEzARBgNVBAgM
-CkNhbGlmb3JuaWExFjAUBgNVBAcMDU1vdW50YWluIFZpZXcxEjAQBgNVBAoMCUR1
-bW15IE9yZzERMA8GA1UECwwIRHVtbXkgT1UxDjAMBgNVBAMMBUR1bW15MR4wHAYJ
-KoZIhvcNAQkBFg9kdW1teUBkdW1teS5jb20wggEiMA0GCSqGSIb3DQEBAQUAA4IB
-DwAwggEKAoIBAQCfXl0XLIIvt6y7A50sVHwB41szsHX+3fWSRhVQ3vvv0PkvAnVB
-WlOo/vx6TSTvEFAVzs9KzXp9LyTf0xlRovfC8lETa+yMRAJ3GWkl4Gr2UFOPrUNg
-RSt/HgRDWiOIn0L2PtAzLndOEz8xMdynQaCSn++mo/kznvCze2hn1MBWOicCB7RF
-BIr07XhdmegsmaoiO3NRZUyuc53lHE9LwZzHWyl4Dp19mxIAh7Z2T+w23l8MikKc
-Sj4BH2l8096VnR6mMNB3EBlcNLVhsUqKQsIJQ54iiqMCvVabYLY8FgAdZK2Vv/Zf
-OaCe1rUGtJSF12z8Tg4tmzvJZbT+/eME54HLAgMBAAEwDQYJKoZIhvcNAQELBQAD
-ggEBABaVEcRLF1FoHP94ZGHdahnWgEZ+oNIGcLLSE2j5E+quICYGaxLFHHY8JHpJ
-xsfiDS9A6VRRfLejr2dJDMOVtvndieO2kRzOjbwNvS+f55vUG5twAeGXaRPiQ8iR
-gkjS285VYHuUuBizoh0hYtJ1O5Xc33bneTVF1UPjqTOusB22S6bKuudnc6kGyPMl
-R/AFgjo+6mgtLVicEFQmlw+bEDMQI9zJqGXOZq01EmAsR19OypPj6ypDW763Pc91
-rQKJqx4s4b7lUbD4vPFybQLw3jrumtncHkGd3qPO5NSWi4E9911fkGv8ihCBfEGt
-9Ifm34MgPMhyWAC6BaivgYcX8Ko=
------END CERTIFICATE-----`
+import (
+	"io/ioutil"
+	"path"
 )
+
+const (
+	// Plaintext for Ciphertext.
+	Plaintext = "All is discovered, flee at once!\n"
+	// Ciphertext is a test sentence encrypted with the CA public key.
+	// Generated with:
+	// openssl x509 -in testdata/testdata.go -inform pem -pubkey -noout > /tmp/pubkey
+	// echo 'All is discovered, flee at once!' |\
+	//     openssl pkeyutl -inkey /tmp/pubkey -pubin -encrypt | base64 > /tmp/out
+	Ciphertext = `
+Oe9eCeqdmcF8skR8iajcBC/OfigMU9W+gGdQqMJPvhqFX95QnIzt9O+Vg5Xfi4IcAXllJpFLj4uY
+KFPmZF7gqWLkVzOXA60TjZXrxrWd+M+fCZ/yP1696iYg9eaCPxvTyXQ08EYl5D931Lxrsvr0UF1L
+lllelQBg+cjr4V4MT94j3pgisSnv7ThrOq6KBL4h9Gjr6cCib9f3vSYgw7mGRLjB/E5T37pZlnqb
+tGAfpvKGpknmhsfxpd6kE59JTiDjdQNkttIgCjTOiF+FB7imJZLMJxJ9OjUirH9au7O5nX71NIc9
+sYpt+z4CenWduPWPz54lJCeS9+rKejqAr9Rtxg==`
+	// testDataPath where certificate and key files can be found.
+	testDataPath = "testdata"
+)
+
+// CAPath returns a path to a directory containing a cert/key suitable for FileStorage.
+func CAPath() string {
+	return path.Join(testDataPath, "ca")
+}
+
+// Certificate returns a PEM encoded leaf certificate.
+func Certificate() ([]byte, error) {
+	return ioutil.ReadFile(path.Join(testDataPath, "test_cert.pem"))
+}
