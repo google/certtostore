@@ -319,6 +319,10 @@ func (w *WinCertStore) Cert() (*x509.Certificate, error) {
 	if err != nil {
 		return nil, err
 	}
+	// If no cert was returned, skip resolving chains and return.
+	if c == nil {
+		return nil, nil
+	}
 	if err := w.resolveChains(ctx); err != nil {
 		return nil, err
 	}
