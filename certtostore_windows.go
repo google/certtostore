@@ -329,6 +329,25 @@ func (w *WinCertStore) Cert() (*x509.Certificate, error) {
 	return c, nil
 }
 
+// CertWithContext performs a certificate lookup using value of issuers that
+// was provided when WinCertStore was created. It returns both the certificate
+// and its Windows context, which can be used to perform other operations,
+// such as looking up the private key with CertKey().
+func (w *WinCertStore) CertWithContext() (*x509.Certificate, *windows.CertContext, error) {
+	c, ctx, err := w.cert(w.issuers, my, certStoreLocalMachine)
+	if err != nil {
+		return nil, nil, err
+	}
+	// If no cert was returned, skip resolving chains and return.
+	if c == nil {
+		return nil, nil, nil
+	}
+	if err := w.resolveChains(ctx); err != nil {
+		return nil, nil, err
+	}
+	return c, ctx, nil
+}
+
 // cert is a helper function to lookup certificates based on a known issuer.
 // store is used to specify which store to perform the lookup in (system or user).
 func (w *WinCertStore) cert(issuers []string, searchRoot *uint16, store uint32) (*x509.Certificate, *windows.CertContext, error) {
