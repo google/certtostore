@@ -302,13 +302,13 @@ func (w *WinCertStore) resolveChains(cert *windows.CertContext) error {
 	defer certFreeCertificateChain.Call(uintptr(unsafe.Pointer(chainCtx)))
 
 	chainCount := int(chainCtx.ChainCount)
-	w.certChains = make([][]*x509.Certificate, 0, chainCount)
-	for i := 0; i <= chainCount; i++ {
+	certChains := make([][]*x509.Certificate, 0, chainCount)
+	for i := 0; i < chainCount; i++ {
 		x509Certs, err := extractSimpleChain(chainCtx.Chains, chainCount, i)
 		if err != nil {
 			return fmt.Errorf("extractSimpleChain: %v", err)
 		}
-		w.certChains = append(w.certChains, x509Certs)
+		certChains = append(certChains, x509Certs)
 	}
 	return nil
 }
