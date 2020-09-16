@@ -34,6 +34,23 @@ const (
 	createMode = os.FileMode(0600)
 )
 
+// Algorithm indicates an asymmetric algorithm used by the credential.
+type Algorithm string
+
+// Algorithms types supported by this package.
+const (
+	EC  Algorithm = "EC"
+	RSA Algorithm = "RSA"
+)
+
+// GenerateOpts holds parameters used to generate a private key.
+type GenerateOpts struct {
+	// Algorithm to be used, either RSA or EC.
+	Algorithm Algorithm
+	// Size is used to specify the bit size of the RSA key or curve for EC keys.
+	Size int
+}
+
 // CertStorage exposes the different backend storage options for certificates.
 type CertStorage interface {
 	// Cert returns the current X509 certificate or nil if no certificate is installed.
@@ -46,7 +63,7 @@ type CertStorage interface {
 	// to perform signatures with the new key and read the public portion of the key. CertStorage
 	// implementations should strive to ensure a Generate call doesn't actually destroy any current
 	// key or cert material and to only install the new key for clients once Store is called.
-	Generate(keySize int) (crypto.Signer, error)
+	Generate(opts GenerateOpts) (crypto.Signer, error)
 	// Store finishes the cert installation started by the last Generate call with the given cert and
 	// intermediate.
 	Store(cert *x509.Certificate, intermediate *x509.Certificate) error
@@ -150,10 +167,15 @@ func (f FileStorage) CertificateChain() ([][]*x509.Certificate, error) {
 }
 
 // Generate creates a new RSA private key and returns a signer that can be used to make a CSR for the key.
-func (f *FileStorage) Generate(keySize int) (crypto.Signer, error) {
-	var err error
-	f.key, err = rsa.GenerateKey(rand.Reader, keySize)
-	return f.key, err
+func (f *FileStorage) Generate(opts GenerateOpts) (crypto.Signer, error) {
+	switch opts.Algorithm {
+	case RSA:
+		var err error
+		f.key, err = rsa.GenerateKey(rand.Reader, opts.Size)
+		return f.key, err
+	default:
+		return nil, fmt.Errorf("unsupported key type: %q", opts.Algorithm)
+	}
 }
 
 // Store finishes our cert installation by PEM encoding the cert, intermediate, and key and storing them to disk.

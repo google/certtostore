@@ -858,39 +858,45 @@ func (w *WinCertStore) CertKey(cert *windows.CertContext) (*Key, error) {
 // Generate returns a crypto.Signer representing either a TPM-backed or
 // software backed key, depending on support from the host OS
 // key size is set to the maximum supported by Microsoft Software Key Storage Provider
-func (w *WinCertStore) Generate(keySize int) (crypto.Signer, error) {
+func (w *WinCertStore) Generate(opts GenerateOpts) (crypto.Signer, error) {
 	logger.Infof("Provider: %s", w.ProvName)
-	// The MPCP only supports a max keywidth of 2048, due to the TPM specification.
-	// https://www.microsoft.com/en-us/download/details.aspx?id=52487
-	// The Microsoft Software Key Storage Provider supports a max keywidth of 16384.
-	if keySize > 16384 {
-		return nil, fmt.Errorf("unsupported keysize, got: %d, want: < %d", keySize, 16384)
-	}
+	var r, kh uintptr
+	var err error
+	switch opts.Algorithm {
+	case RSA:
+		// The MPCP only supports a max keywidth of 2048, due to the TPM specification.
+		// https://www.microsoft.com/en-us/download/details.aspx?id=52487
+		// The Microsoft Software Key Storage Provider supports a max keywidth of 16384.
+		if opts.Size > 16384 {
+			return nil, fmt.Errorf("unsupported keysize, got: %d, want: < %d", opts.Size, 16384)
+		}
 
-	var kh uintptr
-	var length = uint32(keySize)
-	// Pass 0 as the fifth parameter because it is not used (legacy)
-	// https://msdn.microsoft.com/en-us/library/windows/desktop/aa376247(v=vs.85).aspx
-	r, _, err := nCryptCreatePersistedKey.Call(
-		uintptr(w.Prov),
-		uintptr(unsafe.Pointer(&kh)),
-		uintptr(unsafe.Pointer(wide("RSA"))),
-		uintptr(unsafe.Pointer(wide(w.container))),
-		0,
-		nCryptMachineKey|nCryptOverwriteKey)
-	if r != 0 {
-		return nil, fmt.Errorf("NCryptCreatePersistedKey returned %X: %v", r, err)
-	}
+		var length = uint32(opts.Size)
+		// Pass 0 as the fifth parameter because it is not used (legacy)
+		// https://msdn.microsoft.com/en-us/library/windows/desktop/aa376247(v=vs.85).aspx
+		r, _, err = nCryptCreatePersistedKey.Call(
+			uintptr(w.Prov),
+			uintptr(unsafe.Pointer(&kh)),
+			uintptr(unsafe.Pointer(wide("RSA"))),
+			uintptr(unsafe.Pointer(wide(w.container))),
+			0,
+			nCryptMachineKey|nCryptOverwriteKey)
+		if r != 0 {
+			return nil, fmt.Errorf("NCryptCreatePersistedKey returned %X: %v", r, err)
+		}
 
-	// Microsoft function calls return actionable return codes in r, err is often filled with text, even when successful
-	r, _, err = nCryptSetProperty.Call(
-		kh,
-		uintptr(unsafe.Pointer(wide("Length"))),
-		uintptr(unsafe.Pointer(&length)),
-		unsafe.Sizeof(length),
-		ncryptPersistFlag)
-	if r != 0 {
-		return nil, fmt.Errorf("NCryptSetProperty (Length) returned %X: %v", r, err)
+		// Microsoft function calls return actionable return codes in r, err is often filled with text, even when successful
+		r, _, err = nCryptSetProperty.Call(
+			kh,
+			uintptr(unsafe.Pointer(wide("Length"))),
+			uintptr(unsafe.Pointer(&length)),
+			unsafe.Sizeof(length),
+			ncryptPersistFlag)
+		if r != 0 {
+			return nil, fmt.Errorf("NCryptSetProperty (Length) returned %X: %v", r, err)
+		}
+	default:
+		return nil, fmt.Errorf("unsupported key type: %s", opts.Algorithm)
 	}
 
 	var usage uint32
