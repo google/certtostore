@@ -39,6 +39,8 @@ import (
 	"unicode/utf16"
 	"unsafe"
 
+	"golang.org/x/crypto/cryptobyte/asn1"
+	"golang.org/x/crypto/cryptobyte"
 	"golang.org/x/sys/windows"
 	"github.com/google/logger"
 )
@@ -653,17 +655,79 @@ func (k Key) Public() crypto.PublicKey {
 }
 
 // Sign returns the signature of a hash to implement crypto.Signer
-func (k Key) Sign(rand io.Reader, digest []byte, opts crypto.SignerOpts) ([]byte, error) {
-	hf := opts.HashFunc()
-	algID, ok := algIDs[hf]
-	if !ok {
-		return nil, fmt.Errorf("unsupported hash algorithm %v", hf)
+func (k Key) Sign(_ io.Reader, digest []byte, opts crypto.SignerOpts) ([]byte, error) {
+	switch k.AlgorithmGroup {
+	case "ECDSA":
+		return signECDSA(k.handle, digest)
+	case "RSA":
+		hf := opts.HashFunc()
+		algID, ok := algIDs[hf]
+		if !ok {
+			return nil, fmt.Errorf("unsupported RSA hash algorithm %v", hf)
+		}
+		return signRSA(k.handle, digest, algID)
+	default:
+		return nil, fmt.Errorf("unsupported algorithm group %v", k.AlgorithmGroup)
 	}
-
-	return sign(k.handle, digest, algID)
 }
 
-func sign(kh uintptr, digest []byte, algID *uint16) ([]byte, error) {
+func signECDSA(kh uintptr, digest []byte) ([]byte, error) {
+	var size uint32
+	// Obtain the size of the signature
+	r, _, err := nCryptSignHash.Call(
+		kh,
+		0,
+		uintptr(unsafe.Pointer(&digest[0])),
+		uintptr(len(digest)),
+		0,
+		0,
+		uintptr(unsafe.Pointer(&size)),
+		0)
+	if r != 0 {
+		return nil, fmt.Errorf("NCryptSignHash returned %X during size check: %v", r, err)
+	}
+
+	// Obtain the signature data
+	buf := make([]byte, size)
+	r, _, err = nCryptSignHash.Call(
+		kh,
+		0,
+		uintptr(unsafe.Pointer(&digest[0])),
+		uintptr(len(digest)),
+		uintptr(unsafe.Pointer(&buf[0])),
+		uintptr(size),
+		uintptr(unsafe.Pointer(&size)),
+		0)
+	if r != 0 {
+		return nil, fmt.Errorf("NCryptSignHash returned %X during signing: %v", r, err)
+	}
+	if len(buf) != int(size) {
+		return nil, errors.New("invalid length")
+	}
+
+	return packECDSASigValue(bytes.NewReader(buf[:size]), len(digest))
+}
+
+func packECDSASigValue(r io.Reader, digestLength int) ([]byte, error) {
+	sigR := make([]byte, digestLength)
+	if _, err := io.ReadFull(r, sigR); err != nil {
+		return nil, fmt.Errorf("failed to read R: %v", err)
+	}
+
+	sigS := make([]byte, digestLength)
+	if _, err := io.ReadFull(r, sigS); err != nil {
+		return nil, fmt.Errorf("failed to read S: %v", err)
+	}
+
+	var b cryptobyte.Builder
+	b.AddASN1(asn1.SEQUENCE, func(b *cryptobyte.Builder) {
+		b.AddASN1BigInt(new(big.Int).SetBytes(sigR))
+		b.AddASN1BigInt(new(big.Int).SetBytes(sigS))
+	})
+	return b.Bytes()
+}
+
+func signRSA(kh uintptr, digest []byte, algID *uint16) ([]byte, error) {
 	padInfo := paddingInfo{pszAlgID: algID}
 	var size uint32
 	// Obtain the size of the signature
