@@ -46,7 +46,7 @@ import (
 )
 
 const (
-	// wincrypt.h constants
+	// wincrypt.h
 	acquireCached           = 0x1                                             // CRYPT_ACQUIRE_CACHE_FLAG
 	acquireSilent           = 0x40                                            // CRYPT_ACQUIRE_SILENT_FLAG
 	acquireOnlyNCryptKey    = 0x40000                                         // CRYPT_ACQUIRE_ONLY_NCRYPT_KEY_FLAG
