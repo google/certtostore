@@ -39,14 +39,14 @@ import (
 	"unicode/utf16"
 	"unsafe"
 
-	"golang.org/x/crypto/cryptobyte/asn1"
-	"golang.org/x/crypto/cryptobyte"
-	"golang.org/x/sys/windows"
-	"github.com/google/logger"
+	"google3/third_party/golang/go_crypto/cryptobyte/asn1/asn1"
+	"google3/third_party/golang/go_crypto/cryptobyte/cryptobyte"
+	"google3/third_party/golang/go_sys/windows/windows"
+	"google3/third_party/golang/logger/logger"
 )
 
 const (
-	// wincrypt.h constants
+	// wincrypt.h
 	acquireCached           = 0x1                                             // CRYPT_ACQUIRE_CACHE_FLAG
 	acquireSilent           = 0x40                                            // CRYPT_ACQUIRE_SILENT_FLAG
 	acquireOnlyNCryptKey    = 0x40000                                         // CRYPT_ACQUIRE_ONLY_NCRYPT_KEY_FLAG
@@ -889,9 +889,15 @@ func (w *WinCertStore) Key() (Credential, error) {
 
 // CertKey wraps CryptAcquireCertificatePrivateKey. It obtains the CNG private
 // key of a known certificate and returns a pointer to a Key which implements
-// both crypto.Signer and crypto.Decrypter.
+// both crypto.Signer and crypto.Decrypter. When a nil cert context is passed
+// a nil key is intentionally returned, to model the expected behavior of a
+// non-existent cert having no private key.
 // https://docs.microsoft.com/en-us/windows/win32/api/wincrypt/nf-wincrypt-cryptacquirecertificateprivatekey
 func (w *WinCertStore) CertKey(cert *windows.CertContext) (*Key, error) {
+	// Return early if a nil cert was passed.
+	if cert == nil {
+		return nil, nil
+	}
 	var (
 		kh       uintptr
 		spec     uint32
@@ -925,7 +931,7 @@ func (w *WinCertStore) CertKey(cert *windows.CertContext) (*Key, error) {
 func (w *WinCertStore) Generate(opts GenerateOpts) (crypto.Signer, error) {
 	logger.Infof("Provider: %s", w.ProvName)
 	switch opts.Algorithm {
-	// TODO: add support for ECDSA_P384 and ECDSA_P521.
+	// TODO(b/135719297): add support for ECDSA_P384 and ECDSA_P521.
 	case EC:
 		return w.generateECDSA("ECDSA_P256")
 	case RSA:
