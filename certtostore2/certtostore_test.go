@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package certtostore2
+package certtostore
 
 import (
 	"crypto"
@@ -60,8 +60,12 @@ func generateCertificate(caStore CertStorage) (CertStorage, error) {
 		IsCA:                  false,
 		SignatureAlgorithm:    x509.SHA256WithRSA,
 	}
-	if _, err := leafStore.Generate(2048); err != nil {
-		return nil, fmt.Errorf("leafStore.Generate(2048): %v", err)
+	opts := GenerateOpts{
+		Algorithm: RSA,
+		Size:      2048,
+	}
+	if _, err := leafStore.Generate(opts); err != nil {
+		return nil, fmt.Errorf("leafStore.Generate(%v): %v", opts, err)
 	}
 	// Sign the leaf cert request with the CA certificate.
 	caCrt, err := caStore.Cert()
@@ -199,7 +203,11 @@ func TestFileStore(t *testing.T) {
 		t.Errorf("expected intermediate on new file store to be nil, instead %v", cert)
 	}
 
-	signer, err := tc.Generate(2048)
+	opts := GenerateOpts{
+		Algorithm: RSA,
+		Size:      2048,
+	}
+	signer, err := tc.Generate(opts)
 	if err != nil {
 		t.Errorf("failed to generate signer: %v", err)
 	}

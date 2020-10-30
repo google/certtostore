@@ -968,7 +968,7 @@ func (w *WinCertStore) generateECDSA(algID string) (crypto.Signer, error) {
 		return nil, fmt.Errorf("NCryptSetProperty (Key Usage) returned %X: %v", r, err)
 	}
 
-	// Set the second parameter to 0 because we require no flags
+	// keystorage flags are typically zero except when an RSA legacykey is required.
 	// https://msdn.microsoft.com/en-us/library/windows/desktop/aa376265(v=vs.85).aspx
 	r, _, err = nCryptFinalizeKey.Call(kh, w.keyStorageFlags)
 	if r != 0 {
@@ -1024,7 +1024,7 @@ func (w *WinCertStore) generateRSA(keySize int) (crypto.Signer, error) {
 		return nil, fmt.Errorf("NCryptSetProperty (Key Usage) returned %X: %v", r, err)
 	}
 
-	// Set the second parameter to 0 because we require no flags
+	// keystorage flags are typically zero except when an RSA legacykey is required.
 	// https://msdn.microsoft.com/en-us/library/windows/desktop/aa376265(v=vs.85).aspx
 	r, _, err = nCryptFinalizeKey.Call(kh, w.keyStorageFlags)
 	if r != 0 {

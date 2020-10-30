@@ -14,7 +14,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package certtostore2
+package certtostore
 
 import (
 	"bytes"
@@ -39,6 +39,8 @@ import (
 	"unicode/utf16"
 	"unsafe"
 
+	"golang.org/x/crypto/cryptobyte/asn1"
+	"golang.org/x/crypto/cryptobyte"
 	"golang.org/x/sys/windows"
 	"github.com/google/logger"
 )
@@ -653,17 +655,79 @@ func (k Key) Public() crypto.PublicKey {
 }
 
 // Sign returns the signature of a hash to implement crypto.Signer
-func (k Key) Sign(rand io.Reader, digest []byte, opts crypto.SignerOpts) ([]byte, error) {
-	hf := opts.HashFunc()
-	algID, ok := algIDs[hf]
-	if !ok {
-		return nil, fmt.Errorf("unsupported hash algorithm %v", hf)
+func (k Key) Sign(_ io.Reader, digest []byte, opts crypto.SignerOpts) ([]byte, error) {
+	switch k.AlgorithmGroup {
+	case "ECDSA":
+		return signECDSA(k.handle, digest)
+	case "RSA":
+		hf := opts.HashFunc()
+		algID, ok := algIDs[hf]
+		if !ok {
+			return nil, fmt.Errorf("unsupported RSA hash algorithm %v", hf)
+		}
+		return signRSA(k.handle, digest, algID)
+	default:
+		return nil, fmt.Errorf("unsupported algorithm group %v", k.AlgorithmGroup)
 	}
-
-	return sign(k.handle, digest, algID)
 }
 
-func sign(kh uintptr, digest []byte, algID *uint16) ([]byte, error) {
+func signECDSA(kh uintptr, digest []byte) ([]byte, error) {
+	var size uint32
+	// Obtain the size of the signature
+	r, _, err := nCryptSignHash.Call(
+		kh,
+		0,
+		uintptr(unsafe.Pointer(&digest[0])),
+		uintptr(len(digest)),
+		0,
+		0,
+		uintptr(unsafe.Pointer(&size)),
+		0)
+	if r != 0 {
+		return nil, fmt.Errorf("NCryptSignHash returned %X during size check: %v", r, err)
+	}
+
+	// Obtain the signature data
+	buf := make([]byte, size)
+	r, _, err = nCryptSignHash.Call(
+		kh,
+		0,
+		uintptr(unsafe.Pointer(&digest[0])),
+		uintptr(len(digest)),
+		uintptr(unsafe.Pointer(&buf[0])),
+		uintptr(size),
+		uintptr(unsafe.Pointer(&size)),
+		0)
+	if r != 0 {
+		return nil, fmt.Errorf("NCryptSignHash returned %X during signing: %v", r, err)
+	}
+	if len(buf) != int(size) {
+		return nil, errors.New("invalid length")
+	}
+
+	return packECDSASigValue(bytes.NewReader(buf[:size]), len(digest))
+}
+
+func packECDSASigValue(r io.Reader, digestLength int) ([]byte, error) {
+	sigR := make([]byte, digestLength)
+	if _, err := io.ReadFull(r, sigR); err != nil {
+		return nil, fmt.Errorf("failed to read R: %v", err)
+	}
+
+	sigS := make([]byte, digestLength)
+	if _, err := io.ReadFull(r, sigS); err != nil {
+		return nil, fmt.Errorf("failed to read S: %v", err)
+	}
+
+	var b cryptobyte.Builder
+	b.AddASN1(asn1.SEQUENCE, func(b *cryptobyte.Builder) {
+		b.AddASN1BigInt(new(big.Int).SetBytes(sigR))
+		b.AddASN1BigInt(new(big.Int).SetBytes(sigS))
+	})
+	return b.Bytes()
+}
+
+func signRSA(kh uintptr, digest []byte, algID *uint16) ([]byte, error) {
 	padInfo := paddingInfo{pszAlgID: algID}
 	var size uint32
 	// Obtain the size of the signature
@@ -825,9 +889,15 @@ func (w *WinCertStore) Key() (Credential, error) {
 
 // CertKey wraps CryptAcquireCertificatePrivateKey. It obtains the CNG private
 // key of a known certificate and returns a pointer to a Key which implements
-// both crypto.Signer and crypto.Decrypter.
+// both crypto.Signer and crypto.Decrypter. When a nil cert context is passed
+// a nil key is intentionally returned, to model the expected behavior of a
+// non-existent cert having no private key.
 // https://docs.microsoft.com/en-us/windows/win32/api/wincrypt/nf-wincrypt-cryptacquirecertificateprivatekey
 func (w *WinCertStore) CertKey(cert *windows.CertContext) (*Key, error) {
+	// Return early if a nil cert was passed.
+	if cert == nil {
+		return nil, nil
+	}
 	var (
 		kh       uintptr
 		spec     uint32
@@ -858,8 +928,57 @@ func (w *WinCertStore) CertKey(cert *windows.CertContext) (*Key, error) {
 // Generate returns a crypto.Signer representing either a TPM-backed or
 // software backed key, depending on support from the host OS
 // key size is set to the maximum supported by Microsoft Software Key Storage Provider
-func (w *WinCertStore) Generate(keySize int) (crypto.Signer, error) {
+func (w *WinCertStore) Generate(opts GenerateOpts) (crypto.Signer, error) {
 	logger.Infof("Provider: %s", w.ProvName)
+	switch opts.Algorithm {
+	// TODO: add support for ECDSA_P384 and ECDSA_P521.
+	case EC:
+		return w.generateECDSA("ECDSA_P256")
+	case RSA:
+		return w.generateRSA(opts.Size)
+	default:
+		return nil, fmt.Errorf("unsupported key type: %s", opts.Algorithm)
+	}
+}
+
+func (w *WinCertStore) generateECDSA(algID string) (crypto.Signer, error) {
+	var kh uintptr
+	// Pass 0 as the fifth parameter because it is not used (legacy)
+	// https://msdn.microsoft.com/en-us/library/windows/desktop/aa376247(v=vs.85).aspx
+	r, _, err := nCryptCreatePersistedKey.Call(
+		uintptr(w.Prov),
+		uintptr(unsafe.Pointer(&kh)),
+		uintptr(unsafe.Pointer(wide(algID))),
+		uintptr(unsafe.Pointer(wide(w.container))),
+		0,
+		nCryptMachineKey|nCryptOverwriteKey)
+	if r != 0 {
+		return nil, fmt.Errorf("NCryptCreatePersistedKey returned %X: %v", r, err)
+	}
+
+	var usage uint32
+	usage = ncryptAllowDecryptFlag | ncryptAllowSigningFlag
+	r, _, err = nCryptSetProperty.Call(
+		kh,
+		uintptr(unsafe.Pointer(wide("Key Usage"))),
+		uintptr(unsafe.Pointer(&usage)),
+		unsafe.Sizeof(usage),
+		ncryptPersistFlag)
+	if r != 0 {
+		return nil, fmt.Errorf("NCryptSetProperty (Key Usage) returned %X: %v", r, err)
+	}
+
+	// keystorage flags are typically zero except when an RSA legacykey is required.
+	// https://msdn.microsoft.com/en-us/library/windows/desktop/aa376265(v=vs.85).aspx
+	r, _, err = nCryptFinalizeKey.Call(kh, w.keyStorageFlags)
+	if r != 0 {
+		return nil, fmt.Errorf("NCryptFinalizeKey returned %X: %v", r, err)
+	}
+
+	return keyMetadata(kh, w)
+}
+
+func (w *WinCertStore) generateRSA(keySize int) (crypto.Signer, error) {
 	// The MPCP only supports a max keywidth of 2048, due to the TPM specification.
 	// https://www.microsoft.com/en-us/download/details.aspx?id=52487
 	// The Microsoft Software Key Storage Provider supports a max keywidth of 16384.
@@ -905,7 +1024,7 @@ func (w *WinCertStore) Generate(keySize int) (crypto.Signer, error) {
 		return nil, fmt.Errorf("NCryptSetProperty (Key Usage) returned %X: %v", r, err)
 	}
 
-	// Set the second parameter to 0 because we require no flags
+	// keystorage flags are typically zero except when an RSA legacykey is required.
 	// https://msdn.microsoft.com/en-us/library/windows/desktop/aa376265(v=vs.85).aspx
 	r, _, err = nCryptFinalizeKey.Call(kh, w.keyStorageFlags)
 	if r != 0 {
