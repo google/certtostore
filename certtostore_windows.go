@@ -861,7 +861,7 @@ func setACL(file, access, sid, perm string) error {
 	// Error 1798 can safely be ignored, because it occurs when trying to set an acl
 	// for a non-existend sid, which only happens for certain permissions needed on later
 	// versions of Windows.
-	if err, ok := err.(*exec.ExitError); ok && strings.Contains(err.Error(), "1798") == false {
+	if err, ok := err.(*exec.ExitError); ok && !strings.Contains(err.Error(), "1798") {
 		logger.Infof("ignoring error while %sing '%s' access to %s for sid: %v", access, perm, file, sid)
 		return nil
 	} else if err != nil {
@@ -956,8 +956,7 @@ func (w *WinCertStore) generateECDSA(algID string) (crypto.Signer, error) {
 		return nil, fmt.Errorf("NCryptCreatePersistedKey returned %X: %v", r, err)
 	}
 
-	var usage uint32
-	usage = ncryptAllowDecryptFlag | ncryptAllowSigningFlag
+	usage := uint32(ncryptAllowDecryptFlag | ncryptAllowSigningFlag)
 	r, _, err = nCryptSetProperty.Call(
 		kh,
 		uintptr(unsafe.Pointer(wide("Key Usage"))),
@@ -1012,8 +1011,7 @@ func (w *WinCertStore) generateRSA(keySize int) (crypto.Signer, error) {
 		return nil, fmt.Errorf("NCryptSetProperty (Length) returned %X: %v", r, err)
 	}
 
-	var usage uint32
-	usage = ncryptAllowDecryptFlag | ncryptAllowSigningFlag
+	usage := uint32(ncryptAllowDecryptFlag | ncryptAllowSigningFlag)
 	r, _, err = nCryptSetProperty.Call(
 		kh,
 		uintptr(unsafe.Pointer(wide("Key Usage"))),
