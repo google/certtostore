@@ -18,6 +18,8 @@ package certtostore
 import (
 	"bytes"
 	"crypto"
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/tls"
@@ -47,7 +49,7 @@ const (
 type GenerateOpts struct {
 	// Algorithm to be used, either RSA or EC.
 	Algorithm Algorithm
-	// Size is used to specify the bit size of the RSA key or curve for EC keys.
+	// Size is used to specify the bit size of the RSA key.
 	Size int
 }
 
@@ -106,7 +108,7 @@ type FileStorage struct {
 	certFile   string
 	caCertFile string
 	keyFile    string
-	key        *rsa.PrivateKey
+	key        crypto.Signer
 }
 
 // NewFileStorage sets up a new file storage struct for use by StoreCert.
@@ -169,6 +171,11 @@ func (f FileStorage) CertificateChain() ([][]*x509.Certificate, error) {
 // Generate creates a new RSA private key and returns a signer that can be used to make a CSR for the key.
 func (f *FileStorage) Generate(opts GenerateOpts) (crypto.Signer, error) {
 	switch opts.Algorithm {
+	case EC:
+		var err error
+		// TODO: make curve selectable via GenerateOpts.
+		f.key, err = ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		return f.key, err
 	case RSA:
 		var err error
 		f.key, err = rsa.GenerateKey(rand.Reader, opts.Size)
@@ -207,7 +214,11 @@ func (f *FileStorage) Store(cert *x509.Certificate, intermediate *x509.Certifica
 		return nil
 	}
 	// Write our private key out to a file
-	if err := pem.Encode(&keyBuf, &pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(f.key)}); err != nil {
+	b, err := x509.MarshalPKCS8PrivateKey(f.key)
+	if err != nil {
+		return nil
+	}
+	if err := pem.Encode(&keyBuf, &pem.Block{Type: "PRIVATE KEY", Bytes: b}); err != nil {
 		return fmt.Errorf("could not encode key to PEM: %v", err)
 	}
 
