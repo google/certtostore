@@ -207,7 +207,11 @@ func (f *FileStorage) Store(cert *x509.Certificate, intermediate *x509.Certifica
 		return nil
 	}
 	// Write our private key out to a file
-	if err := pem.Encode(&keyBuf, &pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(f.key)}); err != nil {
+	b, err := x509.MarshalPKCS8PrivateKey(f.key)
+	if err != nil {
+		return err
+	}
+	if err := pem.Encode(&keyBuf, &pem.Block{Type: "PRIVATE KEY", Bytes: b}); err != nil {
 		return fmt.Errorf("could not encode key to PEM: %v", err)
 	}
 
