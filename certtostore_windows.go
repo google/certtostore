@@ -956,7 +956,7 @@ func (w *WinCertStore) generateECDSA(algID string) (crypto.Signer, error) {
 		return nil, fmt.Errorf("NCryptCreatePersistedKey returned %X: %v", r, err)
 	}
 
-	usage := uint32(ncryptAllowDecryptFlag | ncryptAllowSigningFlag)
+	usage := uint32(ncryptAllowSigningFlag)
 	r, _, err = nCryptSetProperty.Call(
 		kh,
 		uintptr(unsafe.Pointer(wide("Key Usage"))),
