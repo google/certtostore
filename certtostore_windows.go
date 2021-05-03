@@ -72,6 +72,7 @@ const (
 	ecs1Magic = 0x31534345 // "ECS1" BCRYPT_ECDSA_PUBLIC_P256_MAGIC
 	ecs3Magic = 0x33534345 // "ECS3" BCRYPT_ECDSA_PUBLIC_P384_MAGIC
 	ecs5Magic = 0x35534345 // "ECS5" BCRYPT_ECDSA_PUBLIC_P521_MAGIC
+	ecdpMagic = 0x50444345 // "ECDP" BCRYPT_ECDSA_PUBLIC_GENERIC_MAGIC
 
 	// ncrypt.h constants
 	ncryptPersistFlag           = 0x80000000 // NCRYPT_PERSIST_FLAG
@@ -117,6 +118,10 @@ var (
 		ecs1Magic: elliptic.P256(), // BCRYPT_ECDSA_PUBLIC_P256_MAGIC
 		ecs3Magic: elliptic.P384(), // BCRYPT_ECDSA_PUBLIC_P384_MAGIC
 		ecs5Magic: elliptic.P521(), // BCRYPT_ECDSA_PUBLIC_P521_MAGIC
+		// TODO: for now interpret the generic magic as P256, as we
+		// hardcode P256 key generation. With more curves supported, we may need to
+		// match the curve based on the response size.
+		ecdpMagic: elliptic.P256(), // BCRYPT_ECDSA_PUBLIC_GENERIC_MAGIC
 	}
 
 	// algIDs maps crypto.Hash values to bcrypt.h constants.
