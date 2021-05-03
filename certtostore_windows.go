@@ -676,6 +676,11 @@ func (k Key) Sign(_ io.Reader, digest []byte, opts crypto.SignerOpts) ([]byte, e
 	}
 }
 
+// TransientTpmHandle returns the key's underlying transient TPM handle.
+func (k Key) TransientTpmHandle() uintptr {
+	return k.handle
+}
+
 func signECDSA(kh uintptr, digest []byte) ([]byte, error) {
 	var size uint32
 	// Obtain the size of the signature
