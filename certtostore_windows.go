@@ -72,7 +72,6 @@ const (
 	ecs1Magic = 0x31534345 // "ECS1" BCRYPT_ECDSA_PUBLIC_P256_MAGIC
 	ecs3Magic = 0x33534345 // "ECS3" BCRYPT_ECDSA_PUBLIC_P384_MAGIC
 	ecs5Magic = 0x35534345 // "ECS5" BCRYPT_ECDSA_PUBLIC_P521_MAGIC
-	ecdpMagic = 0x50444345 // "ECDP" BCRYPT_ECDSA_PUBLIC_GENERIC_MAGIC
 
 	// ncrypt.h constants
 	ncryptPersistFlag           = 0x80000000 // NCRYPT_PERSIST_FLAG
@@ -112,16 +111,21 @@ var (
 	// Key storage properties
 	nCryptAlgorithmGroupProperty = wide("Algorithm Group") // NCRYPT_ALGORITHM_GROUP_PROPERTY
 	nCryptUniqueNameProperty     = wide("Unique Name")     // NCRYPT_UNIQUE_NAME_PROPERTY
+	nCryptECCCurveNameProperty   = wide("ECCCurveName")    // NCRYPT_ECC_CURVE_NAME_PROPERTY
 
 	// curveIDs maps bcrypt key blob magic numbers to elliptic curves.
 	curveIDs = map[uint32]elliptic.Curve{
 		ecs1Magic: elliptic.P256(), // BCRYPT_ECDSA_PUBLIC_P256_MAGIC
 		ecs3Magic: elliptic.P384(), // BCRYPT_ECDSA_PUBLIC_P384_MAGIC
 		ecs5Magic: elliptic.P521(), // BCRYPT_ECDSA_PUBLIC_P521_MAGIC
-		// TODO: for now interpret the generic magic as P256, as we
-		// hardcode P256 key generation. With more curves supported, we may need to
-		// match the curve based on the response size.
-		ecdpMagic: elliptic.P256(), // BCRYPT_ECDSA_PUBLIC_GENERIC_MAGIC
+	}
+
+	// curveNames maps bcrypt curve names to elliptic curves. We use it
+	// for a fallback mechanism when magic is incorrect (see b/185945636).
+	curveNames = map[string]elliptic.Curve{
+		"nistP256": elliptic.P256(), // BCRYPT_ECC_CURVE_NISTP256
+		"nistP384": elliptic.P384(), // BCRYPT_ECC_CURVE_NISTP384
+		"nistP521": elliptic.P521(), // BCRYPT_ECC_CURVE_NISTP521
 	}
 
 	// algIDs maps crypto.Hash values to bcrypt.h constants.
@@ -1069,7 +1073,7 @@ func keyMetadata(kh uintptr, store *WinCertStore) (*Key, error) {
 		if err != nil {
 			return nil, fmt.Errorf("failed to export ECC public key: %v", err)
 		}
-		pub, err = unmarshalECC(buf)
+		pub, err = unmarshalECC(buf, kh)
 		if err != nil {
 			return nil, fmt.Errorf("failed to unmarshal ECC public key: %v", err)
 		}
@@ -1192,7 +1196,7 @@ func unmarshalRSA(buf []byte) (*rsa.PublicKey, error) {
 	return pub, nil
 }
 
-func unmarshalECC(buf []byte) (*ecdsa.PublicKey, error) {
+func unmarshalECC(buf []byte, kh uintptr) (*ecdsa.PublicKey, error) {
 	// BCRYPT_ECCKEY_BLOB from bcrypt.h
 	header := struct {
 		Magic uint32
@@ -1206,7 +1210,13 @@ func unmarshalECC(buf []byte) (*ecdsa.PublicKey, error) {
 
 	curve, ok := curveIDs[header.Magic]
 	if !ok {
-		return nil, fmt.Errorf("unsupported header magic: %x", header.Magic)
+		// Fix for b/185945636, where despite specifying the curve, nCrypt returns
+		// an incorrect response with BCRYPT_ECDSA_PUBLIC_GENERIC_MAGIC.
+		var err error
+		curve, err = curveName(kh)
+		if err != nil {
+			return nil, fmt.Errorf("unsupported header magic: %x and cannot match the curve by name: %v", header.Magic, err)
+		}
 	}
 
 	keyX := make([]byte, header.Key)
@@ -1225,6 +1235,19 @@ func unmarshalECC(buf []byte) (*ecdsa.PublicKey, error) {
 		Y:     new(big.Int).SetBytes(keyY),
 	}
 	return pub, nil
+}
+
+// curveName reads the curve name property and returns the corresponding curve.
+func curveName(kh uintptr) (elliptic.Curve, error) {
+	cn, err := getProperty(kh, nCryptECCCurveNameProperty)
+	if err != nil {
+		return nil, fmt.Errorf("unable to determine the curve property name: %v", err)
+	}
+	curve, ok := curveNames[cn]
+	if !ok {
+		return nil, fmt.Errorf("unknown curve name")
+	}
+	return curve, nil
 }
 
 // Store imports certificates into the Windows certificate store
