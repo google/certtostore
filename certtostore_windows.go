@@ -945,9 +945,17 @@ func (w *WinCertStore) CertKey(cert *windows.CertContext) (*Key, error) {
 func (w *WinCertStore) Generate(opts GenerateOpts) (crypto.Signer, error) {
 	logger.Infof("Provider: %s", w.ProvName)
 	switch opts.Algorithm {
-	// TODO: add support for ECDSA_P384 and ECDSA_P521.
 	case EC:
-		return w.generateECDSA("ECDSA_P256")
+		switch opts.Size {
+		case 0, 256:
+			return w.generateECDSA("ECDSA_P256")
+		case 384:
+			return w.generateECDSA("ECDSA_P384")
+		case 521:
+			return w.generateECDSA("ECDSA_P521")
+		default:
+			return nil, fmt.Errorf("unsupported curve size: %d", opts.Size)
+		}
 	case RSA:
 		return w.generateRSA(opts.Size)
 	default:
