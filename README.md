@@ -5,8 +5,6 @@
 CertToStore is a multi-platform package that allows you to work with x509
 certificates on Linux and the certificate store on Windows.
 
-[TOC]
-
 ## Why CertToStore?
 
 CertToStore was created to solve some specific problems when working with
