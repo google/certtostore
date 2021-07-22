@@ -931,7 +931,7 @@ func (w *WinCertStore) CertKey(cert *windows.CertContext) (*Key, error) {
 func (w *WinCertStore) Generate(opts GenerateOpts) (crypto.Signer, error) {
 	logger.Infof("Provider: %s", w.ProvName)
 	switch opts.Algorithm {
-	// TODO: add support for ECDSA_P384 and ECDSA_P521.
+	// TODO(b/135719297): add support for ECDSA_P384 and ECDSA_P521.
 	case EC:
 		return w.generateECDSA("ECDSA_P256")
 	case RSA:
