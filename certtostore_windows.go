@@ -1,3 +1,4 @@
+//go:build windows
 // +build windows
 
 // Copyright 2017 Google Inc.
@@ -157,6 +158,7 @@ var (
 	nCryptDecrypt                     = nCrypt.MustFindProc("NCryptDecrypt")
 	nCryptExportKey                   = nCrypt.MustFindProc("NCryptExportKey")
 	nCryptFinalizeKey                 = nCrypt.MustFindProc("NCryptFinalizeKey")
+	nCryptFreeObject                  = nCrypt.MustFindProc("NCryptFreeObject")
 	nCryptOpenKey                     = nCrypt.MustFindProc("NCryptOpenKey")
 	nCryptOpenStorageProvider         = nCrypt.MustFindProc("NCryptOpenStorageProvider")
 	nCryptGetProperty                 = nCrypt.MustFindProc("NCryptGetProperty")
@@ -178,7 +180,6 @@ func wide(s string) *uint16 {
 }
 
 func openProvider(provider string) (uintptr, error) {
-	var err error
 	var hProv uintptr
 	pname := wide(provider)
 	// Open the provider, the last parameter is not used
@@ -229,7 +230,7 @@ type WinCertStore struct {
 	certChains          [][]*x509.Certificate
 }
 
-// OpenWinCertStore creates a WinCertStore.
+// OpenWinCertStore creates a WinCertStore. Call Close() when finished using the store.
 func OpenWinCertStore(provider, container string, issuers, intermediateIssuers []string, legacyKey bool) (*WinCertStore, error) {
 	// Open a handle to the crypto provider we will use for private key operations
 	cngProv, err := openProvider(provider)
@@ -410,6 +411,15 @@ func (w *WinCertStore) cert(issuers []string, searchRoot *uint16, store uint32) 
 		return nil, nil, nil
 	}
 	return cert, prev, nil
+}
+
+// Close frees the handle to the certificate provider
+func (w *WinCertStore) Close() error {
+	r, _, err := nCryptFreeObject.Call(w.Prov)
+	if r == 0 {
+		return nil
+	}
+	return fmt.Errorf("NCryptFreeObject returned %X: %v", r, err)
 }
 
 // Link will associate the certificate installed in the system store to the user store.
