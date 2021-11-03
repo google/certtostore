@@ -1,6 +1,11 @@
 # CertToStore
 
 [![Go Tests](https://github.com/google/certtostore/workflows/Go%20Tests/badge.svg)](https://github.com/google/certtostore/actions?query=workflow%3A%22Go+Tests%22)
+[![GoDoc](https://pkg.go.dev/badge/github.com/google/certtostore?status.svg)](https://pkg.go.dev/github.com/google/certtostore?tab=doc)
+[![Go Report Card](https://goreportcard.com/badge/github.com/google/certtostore)](https://goreportcard.com/report/github.com/google/certtostore)
+![latest release](https://img.shields.io/github/v/release/google/certtostore)
+![GitHub go.mod Go version](https://img.shields.io/github/go-mod/go-version/google/certtostore)
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 
 CertToStore is a multi-platform package that allows you to work with x509
 certificates on Linux and the certificate store on Windows.
