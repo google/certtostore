@@ -113,6 +113,14 @@ var (
 	nCryptAlgorithmGroupProperty = wide("Algorithm Group") // NCRYPT_ALGORITHM_GROUP_PROPERTY
 	nCryptUniqueNameProperty     = wide("Unique Name")     // NCRYPT_UNIQUE_NAME_PROPERTY
 	nCryptECCCurveNameProperty   = wide("ECCCurveName")    // NCRYPT_ECC_CURVE_NAME_PROPERTY
+	nCryptImplTypeProperty       = wide("Impl Type")       // NCRYPT_IMPL_TYPE_PROPERTY
+	nCryptProviderHandleProperty = wide("Provider Handle") // NCRYPT_PROV_HANDLE
+
+	// Flags for NCRYPT_IMPL_TYPE_PROPERTY
+	nCryptImplHardwareFlag    = 0x00000001 // NCRYPT_IMPL_HARDWARE_FLAG
+	nCryptImplSoftwareFlag    = 0x00000002 // NCRYPT_IMPL_SOFTWARE_FLAG
+	nCryptImplRemovableFlag   = 0x00000008 // NCRYPT_IMPL_REMOVABLE_FLAG
+	nCryptImplHardwareRngFlag = 0x00000010 // NCRYPT_IMPL_HARDWARE_RNG_FLAG
 
 	// curveIDs maps bcrypt key blob magic numbers to elliptic curves.
 	curveIDs = map[uint32]elliptic.Curve{
@@ -413,13 +421,17 @@ func (w *WinCertStore) cert(issuers []string, searchRoot *uint16, store uint32) 
 	return cert, prev, nil
 }
 
-// Close frees the handle to the certificate provider
-func (w *WinCertStore) Close() error {
-	r, _, err := nCryptFreeObject.Call(w.Prov)
+func freeObject(h uintptr) error {
+	r, _, err := nCryptFreeObject.Call(h)
 	if r == 0 {
 		return nil
 	}
 	return fmt.Errorf("NCryptFreeObject returned %X: %v", r, err)
+}
+
+// Close frees the handle to the certificate provider
+func (w *WinCertStore) Close() error {
+	return freeObject(w.Prov)
 }
 
 // Link will associate the certificate installed in the system store to the user store.
@@ -1066,21 +1078,39 @@ func (w *WinCertStore) generateRSA(keySize int) (crypto.Signer, error) {
 
 func keyMetadata(kh uintptr, store *WinCertStore) (*Key, error) {
 	// uc is used to populate the unique container name attribute of the private key
-	uc, err := getProperty(kh, nCryptUniqueNameProperty)
+	uc, err := getPropertyStr(kh, nCryptUniqueNameProperty)
 	if err != nil {
 		return nil, fmt.Errorf("unable to determine key unique name: %v", err)
 	}
 
+	// get the provider handle
+	ph, err := getPropertyHandle(kh, nCryptProviderHandleProperty)
+	if err != nil {
+		return nil, fmt.Errorf("unable to determine key provider: %v", err)
+	}
+	defer freeObject(ph)
+
+	// get the provider implementation from the provider handle
+	impl, err := getPropertyInt(ph, nCryptImplTypeProperty)
+	if err != nil {
+		return nil, fmt.Errorf("unable to determine provider implementation: %v", err)
+	}
+
 	// Populate key storage locations for software backed keys.
 	var lc string
-	if store.ProvName != ProviderMSPlatform {
+
+	// Functions like cert() pull certs from the local store *regardless*
+	// of the provider OpenWinCertStore was given. This means we cannot rely on
+	// store.Prov to tell us which provider a given key resides in. Instead, we
+	// lookup the provider directly from the key properties.
+	if impl == nCryptImplSoftwareFlag {
 		uc, lc, err = softwareKeyContainers(uc)
 		if err != nil {
 			return nil, err
 		}
 	}
 
-	alg, err := getProperty(kh, nCryptAlgorithmGroupProperty)
+	alg, err := getPropertyStr(kh, nCryptAlgorithmGroupProperty)
 	if err != nil {
 		return nil, fmt.Errorf("unable to determine key algorithm: %v", err)
 	}
@@ -1109,7 +1139,7 @@ func keyMetadata(kh uintptr, store *WinCertStore) (*Key, error) {
 	return &Key{handle: kh, pub: pub, Container: uc, LegacyContainer: lc, AlgorithmGroup: alg}, nil
 }
 
-func getProperty(kh uintptr, property *uint16) (string, error) {
+func getProperty(kh uintptr, property *uint16) ([]byte, error) {
 	var strSize uint32
 	r, _, err := nCryptGetProperty.Call(
 		kh,
@@ -1120,7 +1150,7 @@ func getProperty(kh uintptr, property *uint16) (string, error) {
 		0,
 		0)
 	if r != 0 {
-		return "", fmt.Errorf("NCryptGetProperty(%v) returned %X during size check: %v", property, r, err)
+		return nil, fmt.Errorf("NCryptGetProperty(%v) returned %X during size check: %v", property, r, err)
 	}
 
 	buf := make([]byte, strSize)
@@ -1133,9 +1163,39 @@ func getProperty(kh uintptr, property *uint16) (string, error) {
 		0,
 		0)
 	if r != 0 {
-		return "", fmt.Errorf("NCryptGetProperty %v returned %X during export: %v", property, r, err)
+		return nil, fmt.Errorf("NCryptGetProperty %v returned %X during export: %v", property, r, err)
 	}
 
+	return buf, nil
+}
+
+func getPropertyHandle(kh uintptr, property *uint16) (uintptr, error) {
+	buf, err := getProperty(kh, property)
+	if err != nil {
+		return 0, err
+	}
+	if len(buf) < 1 {
+		return 0, fmt.Errorf("empty result")
+	}
+	return **(**uintptr)(unsafe.Pointer(&buf)), nil
+}
+
+func getPropertyInt(kh uintptr, property *uint16) (int, error) {
+	buf, err := getProperty(kh, property)
+	if err != nil {
+		return 0, err
+	}
+	if len(buf) < 1 {
+		return 0, fmt.Errorf("empty result")
+	}
+	return **(**int)(unsafe.Pointer(&buf)), nil
+}
+
+func getPropertyStr(kh uintptr, property *uint16) (string, error) {
+	buf, err := getProperty(kh, property)
+	if err != nil {
+		return "", err
+	}
 	uc := strings.Replace(string(buf), string(0x00), "", -1)
 	return uc, nil
 }
@@ -1257,7 +1317,7 @@ func unmarshalECC(buf []byte, kh uintptr) (*ecdsa.PublicKey, error) {
 
 // curveName reads the curve name property and returns the corresponding curve.
 func curveName(kh uintptr) (elliptic.Curve, error) {
-	cn, err := getProperty(kh, nCryptECCCurveNameProperty)
+	cn, err := getPropertyStr(kh, nCryptECCCurveNameProperty)
 	if err != nil {
 		return nil, fmt.Errorf("unable to determine the curve property name: %v", err)
 	}
