@@ -219,6 +219,11 @@ func findCert(store windows.Handle, enc, findFlags, findType uint32, para *uint1
 	return (*windows.CertContext)(unsafe.Pointer(h)), nil
 }
 
+// FreeCertContext frees a certificate context after use.
+func FreeCertContext(ctx *windows.CertContext) error {
+	return windows.CertFreeCertificateContext(ctx)
+}
+
 // intendedKeyUsage wraps CertGetIntendedKeyUsage. If there are key usage bytes they will be returned,
 // otherwise 0 will be returned. The final parameter (2) represents the size in bytes of &usage.
 func intendedKeyUsage(enc uint32, cert *windows.CertContext) (usage uint16) {
@@ -353,6 +358,8 @@ func (w *WinCertStore) Cert() (*x509.Certificate, error) {
 // was provided when WinCertStore was created. It returns both the certificate
 // and its Windows context, which can be used to perform other operations,
 // such as looking up the private key with CertKey().
+//
+// You must call FreeCertContext on the context after use.
 func (w *WinCertStore) CertWithContext() (*x509.Certificate, *windows.CertContext, error) {
 	c, ctx, err := w.cert(w.issuers, my, certStoreLocalMachine)
 	if err != nil {
@@ -907,7 +914,12 @@ func setACL(file, access, sid, perm string) error {
 }
 
 // Key opens a handle to an existing private key and returns key.
-// Key implements both crypto.Signer and crypto.Decrypter
+// Key implements both crypto.Signer and crypto.Decrypter.
+//
+// Important: The Key lookup is based on the provider passed to OpenWinCertStore. This
+// *may not match* the certificate obtained by Cert() for the same store, which may be associated
+// with a different provider. Use CertKey() to derive a key directly from a Cert in situations
+// where both are needed.
 func (w *WinCertStore) Key() (Credential, error) {
 	var kh uintptr
 	r, _, err := nCryptOpenKey.Call(
