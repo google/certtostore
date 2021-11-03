@@ -39,10 +39,10 @@ import (
 	"unicode/utf16"
 	"unsafe"
 
-	"golang.org/x/crypto/cryptobyte/asn1"
-	"golang.org/x/crypto/cryptobyte"
-	"golang.org/x/sys/windows"
 	"github.com/google/logger"
+	"golang.org/x/crypto/cryptobyte"
+	"golang.org/x/crypto/cryptobyte/asn1"
+	"golang.org/x/sys/windows"
 )
 
 const (
@@ -859,7 +859,7 @@ func setACL(file, access, sid, perm string) error {
 	// Parameter validation isn't required, icacls handles this on its own.
 	err := exec.Command("icacls.exe", file, "/"+access, sid+":"+perm).Run()
 	// Error 1798 can safely be ignored, because it occurs when trying to set an acl
-	// for a non-existend sid, which only happens for certain permissions needed on later
+	// for a non-existent sid, which only happens for certain permissions needed on later
 	// versions of Windows.
 	if err, ok := err.(*exec.ExitError); ok && strings.Contains(err.Error(), "1798") == false {
 		logger.Infof("ignoring error while %sing '%s' access to %s for sid: %v", access, perm, file, sid)
