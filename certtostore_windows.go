@@ -340,17 +340,11 @@ func (w *WinCertStore) resolveChains(cert *windows.CertContext) error {
 
 // Cert returns the current cert associated with this WinCertStore or nil if there isn't one.
 func (w *WinCertStore) Cert() (*x509.Certificate, error) {
-	c, ctx, err := w.cert(w.issuers, my, certStoreLocalMachine)
+	c, ctx, err := w.CertWithContext()
 	if err != nil {
 		return nil, err
 	}
-	// If no cert was returned, skip resolving chains and return.
-	if c == nil {
-		return nil, nil
-	}
-	if err := w.resolveChains(ctx); err != nil {
-		return nil, err
-	}
+	FreeCertContext(ctx)
 	return c, nil
 }
 
