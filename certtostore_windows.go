@@ -174,6 +174,9 @@ var (
 	nCryptGetProperty                 = nCrypt.MustFindProc("NCryptGetProperty")
 	nCryptSetProperty                 = nCrypt.MustFindProc("NCryptSetProperty")
 	nCryptSignHash                    = nCrypt.MustFindProc("NCryptSignHash")
+
+	// Test helpers
+	fnGetProperty = getProperty
 )
 
 // paddingInfo is the BCRYPT_PKCS1_PADDING_INFO struct in bcrypt.h.
@@ -1206,7 +1209,7 @@ func getPropertyHandle(kh uintptr, property *uint16) (uintptr, error) {
 }
 
 func getPropertyInt(kh uintptr, property *uint16) (int, error) {
-	buf, err := getProperty(kh, property)
+	buf, err := fnGetProperty(kh, property)
 	if err != nil {
 		return 0, err
 	}
@@ -1217,7 +1220,7 @@ func getPropertyInt(kh uintptr, property *uint16) (int, error) {
 }
 
 func getPropertyStr(kh uintptr, property *uint16) (string, error) {
-	buf, err := getProperty(kh, property)
+	buf, err := fnGetProperty(kh, property)
 	if err != nil {
 		return "", err
 	}
