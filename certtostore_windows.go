@@ -1224,8 +1224,8 @@ func getPropertyStr(kh uintptr, property *uint16) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	uc := strings.Replace(string(buf), string(0x00), "", -1)
-	return uc, nil
+	uc := bytes.ReplaceAll(buf, []byte{0x00}, []byte(""))
+	return string(uc), nil
 }
 
 func export(kh uintptr, blobType *uint16) ([]byte, error) {
