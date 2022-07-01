@@ -928,7 +928,7 @@ func setACL(file, access, sid, perm string) error {
 		return nil
 	} else if err1 != nil {
 		return fmt.Errorf("certstorage.SetFileACL is unable to %s %s access on %s to sid %s, %v", access, perm, file, sid, err1)
-	} else if !ok {
+	} else if !ok && err != nil {
 		return fmt.Errorf("certstorage.SetFileACL failed to pull exit error while %s %s access on %s to sid %s, %v", access, perm, file, sid, err)
 	}
 	return nil
