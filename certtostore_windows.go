@@ -175,6 +175,9 @@ var (
 	nCryptSetProperty                 = nCrypt.MustFindProc("NCryptSetProperty")
 	nCryptSignHash                    = nCrypt.MustFindProc("NCryptSignHash")
 
+	// Path to icacls binary
+	icaclsPath = filepath.Join(os.Getenv("SystemRoot"), "System32", "icacls.exe")
+
 	// Test helpers
 	fnGetProperty = getProperty
 )
@@ -914,17 +917,19 @@ func (k *Key) SetACL(access string, sid string, perm string) error {
 // setACL sets permissions for the private key by wrapping the Microsoft
 // icacls utility. icacls is used for simplicity working with NTFS ACLs.
 func setACL(file, access, sid, perm string) error {
-	logger.Infof("running: icacls.exe %s /%s %s:%s", file, access, sid, perm)
+	logger.Infof("running: %s %s /%s %s:%s", icaclsPath, file, access, sid, perm)
 	// Parameter validation isn't required, icacls handles this on its own.
-	err := exec.Command("icacls.exe", file, "/"+access, sid+":"+perm).Run()
+	err := exec.Command(icaclsPath, file, "/"+access, sid+":"+perm).Run()
 	// Error 1798 can safely be ignored, because it occurs when trying to set an acl
 	// for a non-existend sid, which only happens for certain permissions needed on later
 	// versions of Windows.
-	if err, ok := err.(*exec.ExitError); ok && !strings.Contains(err.Error(), "1798") {
+	if err1, ok := err.(*exec.ExitError); ok && !strings.Contains(err1.Error(), "1798") {
 		logger.Infof("ignoring error while %sing '%s' access to %s for sid: %v", access, perm, file, sid)
 		return nil
-	} else if err != nil {
-		return fmt.Errorf("certstorage.SetFileACL is unable to %s %s access on %s to sid %s, %v", access, perm, file, sid, err)
+	} else if err1 != nil {
+		return fmt.Errorf("certstorage.SetFileACL is unable to %s %s access on %s to sid %s, %v", access, perm, file, sid, err1)
+	} else if !ok {
+		return fmt.Errorf("certstorage.SetFileACL failed to pull exit error while %s %s access on %s to sid %s, %v", access, perm, file, sid, err)
 	}
 	return nil
 }
