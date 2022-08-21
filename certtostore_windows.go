@@ -41,11 +41,11 @@ import (
 	"unicode/utf16"
 	"unsafe"
 
-	"golang.org/x/crypto/cryptobyte/asn1"
-	"golang.org/x/crypto/cryptobyte"
-	"golang.org/x/sys/windows"
-	"github.com/hashicorp/go-multierror"
 	"github.com/google/logger"
+	"github.com/hashicorp/go-multierror"
+	"golang.org/x/crypto/cryptobyte"
+	"golang.org/x/crypto/cryptobyte/asn1"
+	"golang.org/x/sys/windows"
 )
 
 const (
@@ -249,12 +249,14 @@ type WinCertStore struct {
 	keyStorageFlags     uintptr
 	certChains          [][]*x509.Certificate
 	stores              map[string]*storeHandle
+	certStoreLocation   uint32
 
 	mu sync.Mutex
 }
 
 // OpenWinCertStore creates a WinCertStore. Call Close() when finished using the store.
-func OpenWinCertStore(provider, container string, issuers, intermediateIssuers []string, legacyKey bool) (*WinCertStore, error) {
+func OpenWinCertStore(provider, container string, issuers, intermediateIssuers []string,
+	legacyKey bool, certStoreLocation uint32) (*WinCertStore, error) {
 	// Open a handle to the crypto provider we will use for private key operations
 	cngProv, err := openProvider(provider)
 	if err != nil {
@@ -268,6 +270,7 @@ func OpenWinCertStore(provider, container string, issuers, intermediateIssuers [
 		intermediateIssuers: intermediateIssuers,
 		container:           container,
 		stores:              make(map[string]*storeHandle),
+		certStoreLocation:   certStoreLocation,
 	}
 
 	if legacyKey {
@@ -366,7 +369,7 @@ func (w *WinCertStore) Cert() (*x509.Certificate, error) {
 //
 // You must call FreeCertContext on the context after use.
 func (w *WinCertStore) CertWithContext() (*x509.Certificate, *windows.CertContext, error) {
-	c, ctx, err := w.cert(w.issuers, my, certStoreLocalMachine)
+	c, ctx, err := w.cert(w.issuers, my, w.certStoreLocation)
 	if err != nil {
 		return nil, nil, err
 	}
