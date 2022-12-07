@@ -48,6 +48,37 @@ import (
 	"github.com/google/logger"
 )
 
+// WinCertStorage provides windows-specific additions to the CertStorage interface.
+type WinCertStorage interface {
+	CertStorage
+
+	// Remove removes certificates issued by any of w.issuers from the user and/or system cert stores.
+	// If it is unable to remove any certificates, it returns an error.
+	Remove(removeSystem bool) error
+
+	// Link will associate the certificate installed in the system store to the user store.
+	Link() error
+
+	// Close frees the handle to the certificate provider, the certificate store, etc.
+	Close() error
+
+	// CertWithContext performs a certificate lookup using value of issuers that
+	// was provided when WinCertStore was created. It returns both the certificate
+	// and its Windows context, which can be used to perform other operations,
+	// such as looking up the private key with CertKey().
+	//
+	// You must call FreeCertContext on the context after use.
+	CertWithContext() (*x509.Certificate, *windows.CertContext, error)
+
+	// CertKey wraps CryptAcquireCertificatePrivateKey. It obtains the CNG private
+	// key of a known certificate and returns a pointer to a Key which implements
+	// both crypto.Signer and crypto.Decrypter. When a nil cert context is passed
+	// a nil key is intentionally returned, to model the expected behavior of a
+	// non-existent cert having no private key.
+	// https://docs.microsoft.com/en-us/windows/win32/api/wincrypt/nf-wincrypt-cryptacquirecertificateprivatekey
+	CertKey(cert *windows.CertContext) (*Key, error)
+}
+
 const (
 	// wincrypt.h constants
 	acquireCached           = 0x1                                             // CRYPT_ACQUIRE_CACHE_FLAG
