@@ -41,11 +41,11 @@ import (
 	"unicode/utf16"
 	"unsafe"
 
-	"github.com/google/logger"
-	"github.com/hashicorp/go-multierror"
-	"golang.org/x/crypto/cryptobyte"
+	"github.com/google/deck"
 	"golang.org/x/crypto/cryptobyte/asn1"
+	"golang.org/x/crypto/cryptobyte"
 	"golang.org/x/sys/windows"
+	"github.com/hashicorp/go-multierror"
 )
 
 // WinCertStorage provides windows-specific additions to the CertStorage interface.
@@ -551,7 +551,7 @@ func (w *WinCertStore) Link() error {
 		return fmt.Errorf("CertAddCertificateContextToStore returned: %v", err)
 	}
 
-	logger.Infof("Successfully linked to existing system certificate with serial %s.", cert.SerialNumber)
+	deck.Infof("Successfully linked to existing system certificate with serial %s.", cert.SerialNumber)
 	fmt.Fprintf(os.Stdout, "Successfully linked to existing system certificate with serial %s.\n", cert.SerialNumber)
 
 	// Link legacy crypto only if requested.
@@ -598,7 +598,7 @@ func (w *WinCertStore) linkLegacy() error {
 	if w.ProvName != ProviderMSLegacy {
 		return fmt.Errorf("cannot link legacy key, Provider mismatch: got %q, want %q", w.ProvName, ProviderMSLegacy)
 	}
-	logger.Info("Linking legacy key to the user private store.")
+	deck.Info("Linking legacy key to the user private store.")
 
 	cert, context, err := w.cert(w.issuers, my, certStoreLocalMachine)
 	if err != nil {
@@ -632,7 +632,7 @@ func (w *WinCertStore) linkLegacy() error {
 	if err := copyFile(k.LegacyContainer, userContainer); err != nil {
 		return err
 	}
-	logger.Infof("Legacy key %q was located and linked to the user store.", k.LegacyContainer)
+	deck.Infof("Legacy key %q was located and linked to the user store.", k.LegacyContainer)
 	return nil
 }
 
@@ -669,7 +669,7 @@ func (w *WinCertStore) remove(issuer string, removeSystem bool) error {
 		if err := removeCert(userCertContext); err != nil {
 			return fmt.Errorf("failed to remove user cert: %v", err)
 		}
-		logger.Info("Cleaned up a user certificate.")
+		deck.Info("Cleaned up a user certificate.")
 		fmt.Fprintln(os.Stderr, "Cleaned up a user certificate.")
 	}
 
@@ -698,7 +698,7 @@ func (w *WinCertStore) remove(issuer string, removeSystem bool) error {
 		if err := removeCert(systemCertContext); err != nil {
 			return fmt.Errorf("failed to remove system cert: %v", err)
 		}
-		logger.Info("Cleaned up a system certificate.")
+		deck.Info("Cleaned up a system certificate.")
 		fmt.Fprintln(os.Stderr, "Cleaned up a system certificate.")
 	}
 
@@ -964,14 +964,14 @@ func (k *Key) SetACL(access string, sid string, perm string) error {
 // setACL sets permissions for the private key by wrapping the Microsoft
 // icacls utility. icacls is used for simplicity working with NTFS ACLs.
 func setACL(file, access, sid, perm string) error {
-	logger.Infof("running: %s %s /%s %s:%s", icaclsPath, file, access, sid, perm)
+	deck.Infof("running: %s %s /%s %s:%s", icaclsPath, file, access, sid, perm)
 	// Parameter validation isn't required, icacls handles this on its own.
 	err := exec.Command(icaclsPath, file, "/"+access, sid+":"+perm).Run()
 	// Error 1798 can safely be ignored, because it occurs when trying to set an acl
 	// for a non-existend sid, which only happens for certain permissions needed on later
 	// versions of Windows.
 	if err1, ok := err.(*exec.ExitError); ok && !strings.Contains(err1.Error(), "1798") {
-		logger.Infof("ignoring error while %sing '%s' access to %s for sid: %v", access, perm, file, sid)
+		deck.Infof("ignoring error while %sing '%s' access to %s for sid: %v", access, perm, file, sid)
 		return nil
 	} else if err1 != nil {
 		return fmt.Errorf("certstorage.SetFileACL is unable to %s %s access on %s to sid %s, %v", access, perm, file, sid, err1)
@@ -1045,7 +1045,7 @@ func (w *WinCertStore) CertKey(cert *windows.CertContext) (*Key, error) {
 // software backed key, depending on support from the host OS
 // key size is set to the maximum supported by Microsoft Software Key Storage Provider
 func (w *WinCertStore) Generate(opts GenerateOpts) (crypto.Signer, error) {
-	logger.Infof("Provider: %s", w.ProvName)
+	deck.Infof("Provider: %s", w.ProvName)
 	switch opts.Algorithm {
 	case EC:
 		switch opts.Size {
