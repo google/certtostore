@@ -360,6 +360,13 @@ func extractSimpleChain(simpleChain **windows.CertSimpleChain, chainCount, chain
 	return chain, nil
 }
 
+func (w *WinCertStore) storeDomain() uint32 {
+	if w.keyAccessFlags == nCryptMachineKey {
+		return certStoreLocalMachine
+	}
+	return certStoreCurrentUser
+}
+
 // resolveCertChains builds chains to roots from a given certificate using the local machine store.
 func (w *WinCertStore) resolveChains(cert *windows.CertContext) error {
 	var (
@@ -413,7 +420,7 @@ func (w *WinCertStore) Cert() (*x509.Certificate, error) {
 //
 // You must call FreeCertContext on the context after use.
 func (w *WinCertStore) CertWithContext() (*x509.Certificate, *windows.CertContext, error) {
-	c, ctx, err := w.cert(w.issuers, my, certStoreLocalMachine)
+	c, ctx, err := w.cert(w.issuers, my, w.storeDomain())
 	if err != nil {
 		return nil, nil, err
 	}
@@ -718,14 +725,14 @@ func removeCert(certContext *windows.CertContext) error {
 // Intermediate returns the current intermediate cert associated with this
 // WinCertStore or nil if there isn't one.
 func (w *WinCertStore) Intermediate() (*x509.Certificate, error) {
-	c, _, err := w.cert(w.intermediateIssuers, my, certStoreLocalMachine)
+	c, _, err := w.cert(w.intermediateIssuers, my, w.storeDomain())
 	return c, err
 }
 
 // Root returns the certificate issued by the specified issuer from the
 // root certificate store 'ROOT/Certificates'.
 func (w *WinCertStore) Root(issuer []string) (*x509.Certificate, error) {
-	c, _, err := w.cert(issuer, root, certStoreLocalMachine)
+	c, _, err := w.cert(issuer, root, w.storeDomain())
 	return c, err
 }
 
@@ -1431,7 +1438,7 @@ func (w *WinCertStore) Store(cert *x509.Certificate, intermediate *x509.Certific
 	}
 
 	// Open a handle to the system cert store
-	h, err := w.storeHandle(certStoreLocalMachine, my)
+	h, err := w.storeHandle(w.storeDomain(), my)
 	if err != nil {
 		return err
 	}
@@ -1451,7 +1458,7 @@ func (w *WinCertStore) Store(cert *x509.Certificate, intermediate *x509.Certific
 	}
 	defer windows.CertFreeCertificateContext(intContext)
 
-	h2, err := w.storeHandle(certStoreLocalMachine, ca)
+	h2, err := w.storeHandle(w.storeDomain(), ca)
 	if err != nil {
 		return err
 	}
