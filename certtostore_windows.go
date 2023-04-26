@@ -82,7 +82,7 @@ type WinCertStorage interface {
 	// disposition specifies the action to take if a matching certificate
 	// or a link to a matching certificate already exists in the store
 	// https://learn.microsoft.com/en-us/windows/win32/api/wincrypt/nf-wincrypt-certaddcertificatecontexttostore
-	StoreWithDisposition(cert *x509.Certificate, intermediate *x509.Certificate, disposition uint32)
+	StoreWithDisposition(cert *x509.Certificate, intermediate *x509.Certificate, disposition uint32) error
 }
 
 const (
