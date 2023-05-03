@@ -42,10 +42,10 @@ import (
 	"unsafe"
 
 	"github.com/google/deck"
-	"golang.org/x/crypto/cryptobyte/asn1"
-	"golang.org/x/crypto/cryptobyte"
-	"golang.org/x/sys/windows"
 	"github.com/hashicorp/go-multierror"
+	"golang.org/x/crypto/cryptobyte"
+	"golang.org/x/crypto/cryptobyte/asn1"
+	"golang.org/x/sys/windows"
 )
 
 // WinCertStorage provides windows-specific additions to the CertStorage interface.
@@ -77,6 +77,12 @@ type WinCertStorage interface {
 	// non-existent cert having no private key.
 	// https://docs.microsoft.com/en-us/windows/win32/api/wincrypt/nf-wincrypt-cryptacquirecertificateprivatekey
 	CertKey(cert *windows.CertContext) (*Key, error)
+
+	// StoreWithDisposition imports certificates into the Windows certificate store.
+	// disposition specifies the action to take if a matching certificate
+	// or a link to a matching certificate already exists in the store
+	// https://learn.microsoft.com/en-us/windows/win32/api/wincrypt/nf-wincrypt-certaddcertificatecontexttostore
+	StoreWithDisposition(cert *x509.Certificate, intermediate *x509.Certificate, disposition uint32) error
 }
 
 const (
@@ -673,7 +679,7 @@ func (w *WinCertStore) remove(issuer string, removeSystem bool) error {
 	}
 
 	if userCertContext != nil {
-		if err := removeCert(userCertContext); err != nil {
+		if err := RemoveCertByContext(userCertContext); err != nil {
 			return fmt.Errorf("failed to remove user cert: %v", err)
 		}
 		deck.Info("Cleaned up a user certificate.")
@@ -702,7 +708,7 @@ func (w *WinCertStore) remove(issuer string, removeSystem bool) error {
 	}
 
 	if systemCertContext != nil {
-		if err := removeCert(systemCertContext); err != nil {
+		if err := RemoveCertByContext(systemCertContext); err != nil {
 			return fmt.Errorf("failed to remove system cert: %v", err)
 		}
 		deck.Info("Cleaned up a system certificate.")
@@ -712,9 +718,9 @@ func (w *WinCertStore) remove(issuer string, removeSystem bool) error {
 	return nil
 }
 
-// removeCert wraps CertDeleteCertificateFromStore. If the call succeeds, nil is returned, otherwise
+// RemoveCertByContext wraps CertDeleteCertificateFromStore. If the call succeeds, nil is returned, otherwise
 // the extended error is returned.
-func removeCert(certContext *windows.CertContext) error {
+func RemoveCertByContext(certContext *windows.CertContext) error {
 	r, _, err := certDeleteCertificateFromStore.Call(uintptr(unsafe.Pointer(certContext)))
 	if r != 1 {
 		return fmt.Errorf("certdeletecertificatefromstore failed with %X: %v", r, err)
@@ -1417,6 +1423,14 @@ func curveName(kh uintptr) (elliptic.Curve, error) {
 
 // Store imports certificates into the Windows certificate store
 func (w *WinCertStore) Store(cert *x509.Certificate, intermediate *x509.Certificate) error {
+	return w.StoreWithDisposition(cert, intermediate, windows.CERT_STORE_ADD_ALWAYS)
+}
+
+// StoreWithDisposition imports certificates into the Windows certificate store.
+// disposition specifies the action to take if a matching certificate
+// or a link to a matching certificate already exists in the store
+// https://learn.microsoft.com/en-us/windows/win32/api/wincrypt/nf-wincrypt-certaddcertificatecontexttostore
+func (w *WinCertStore) StoreWithDisposition(cert *x509.Certificate, intermediate *x509.Certificate, disposition uint32) error {
 	certContext, err := windows.CertCreateCertificateContext(
 		encodingX509ASN|encodingPKCS7,
 		&cert.Raw[0],
@@ -1444,7 +1458,7 @@ func (w *WinCertStore) Store(cert *x509.Certificate, intermediate *x509.Certific
 	}
 
 	// Add the cert context to the system certificate store
-	if err := windows.CertAddCertificateContextToStore(h, certContext, windows.CERT_STORE_ADD_ALWAYS, nil); err != nil {
+	if err := windows.CertAddCertificateContextToStore(h, certContext, disposition, nil); err != nil {
 		return fmt.Errorf("CertAddCertificateContextToStore returned: %v", err)
 	}
 
@@ -1464,7 +1478,7 @@ func (w *WinCertStore) Store(cert *x509.Certificate, intermediate *x509.Certific
 	}
 
 	// Add the intermediate cert context to the store
-	if err := windows.CertAddCertificateContextToStore(h2, intContext, windows.CERT_STORE_ADD_ALWAYS, nil); err != nil {
+	if err := windows.CertAddCertificateContextToStore(h2, intContext, disposition, nil); err != nil {
 		return fmt.Errorf("CertAddCertificateContextToStore returned: %v", err)
 	}
 
