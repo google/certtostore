@@ -338,7 +338,7 @@ func certContextToX509(ctx *windows.CertContext) (*x509.Certificate, error) {
 	slice.Data = uintptr(unsafe.Pointer(ctx.EncodedCert))
 	slice.Len = int(ctx.Length)
 	slice.Cap = int(ctx.Length)
-	return x509.ParseCertificate(der)
+	return x509.ParseCertificate(append([]byte{}, der...))
 }
 
 // extractSimpleChain extracts the requested certificate chain from a CertSimpleChain.
