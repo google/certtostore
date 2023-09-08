@@ -1227,7 +1227,7 @@ func keyMetadata(kh uintptr, store *WinCertStore) (*Key, error) {
 	// store.Prov to tell us which provider a given key resides in. Instead, we
 	// lookup the provider directly from the key properties.
 	if impl == nCryptImplSoftwareFlag {
-		uc, lc, err = softwareKeyContainers(uc)
+		uc, lc, err = softwareKeyContainers(uc, store.storeDomain())
 		if err != nil {
 			return nil, err
 		}
@@ -1555,11 +1555,24 @@ func copyFile(from, to string) error {
 
 // softwareKeyContainers returns the file path for a software backed key. If the key
 // was finalized with with NCRYPT_WRITE_KEY_TO_LEGACY_STORE_FLAG, it also returns its
-// equivalent CryptoAPI key file path. It assumes the key is persisted in the system keystore.
+// equivalent CryptoAPI key file path.
 // https://docs.microsoft.com/en-us/windows/win32/api/ncrypt/nf-ncrypt-ncryptfinalizekey.
-func softwareKeyContainers(uniqueID string) (string, string, error) {
-	var cngRoot = os.Getenv("ProgramData") + `\Microsoft\Crypto\Keys\`
-	var capiRoot = os.Getenv("ProgramData") + `\Microsoft\Crypto\RSA\MachineKeys\`
+func softwareKeyContainers(uniqueID string, storeDomain uint32) (string, string, error) {
+	var cngRoot, capiRoot string
+	switch storeDomain {
+	case certStoreLocalMachine:
+		cngRoot = os.Getenv("ProgramData") + `\Microsoft\Crypto\Keys\`
+		capiRoot = os.Getenv("ProgramData") + `\Microsoft\Crypto\RSA\MachineKeys\`
+	case certStoreCurrentUser:
+		cngRoot = os.Getenv("AppData") + `\Microsoft\Crypto\Keys\`
+		sid, err := UserSID()
+		if err != nil {
+			return "", "", fmt.Errorf("unable to determine user SID: %v", err)
+		}
+		capiRoot = fmt.Sprintf(`%s\Microsoft\Crypto\RSA\%s\`, os.Getenv("AppData"), sid)
+	default:
+		return "", "", fmt.Errorf("unexpected store domain %d", storeDomain)
+	}
 
 	// Determine the key type, so that we know which container we are
 	// working with.
