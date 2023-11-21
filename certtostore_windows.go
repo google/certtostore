@@ -28,7 +28,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"math/big"
 	"os"
 	"os/exec"
@@ -37,7 +36,6 @@ import (
 	"strings"
 	"sync"
 	"syscall"
-	"time"
 	"unicode/utf16"
 	"unsafe"
 
@@ -115,10 +113,9 @@ const (
 	ecs5Magic = 0x35534345 // "ECS5" BCRYPT_ECDSA_PUBLIC_P521_MAGIC
 
 	// ncrypt.h constants
-	ncryptPersistFlag           = 0x80000000 // NCRYPT_PERSIST_FLAG
-	ncryptAllowDecryptFlag      = 0x1        // NCRYPT_ALLOW_DECRYPT_FLAG
-	ncryptAllowSigningFlag      = 0x2        // NCRYPT_ALLOW_SIGNING_FLAG
-	ncryptWriteKeyToLegacyStore = 0x00000200 // NCRYPT_WRITE_KEY_TO_LEGACY_STORE_FLAG
+	ncryptPersistFlag      = 0x80000000 // NCRYPT_PERSIST_FLAG
+	ncryptAllowDecryptFlag = 0x1        // NCRYPT_ALLOW_DECRYPT_FLAG
+	ncryptAllowSigningFlag = 0x2        // NCRYPT_ALLOW_SIGNING_FLAG
 
 	// NCryptPadOAEPFlag is used with Decrypt to specify whether to use OAEP.
 	NCryptPadOAEPFlag = 0x00000004 // NCRYPT_PAD_OAEP_FLAG
@@ -134,8 +131,6 @@ const (
 	ProviderMSPlatform = "Microsoft Platform Crypto Provider"
 	// ProviderMSSoftware represents the Microsoft Software Key Storage Provider
 	ProviderMSSoftware = "Microsoft Software Key Storage Provider"
-	// ProviderMSLegacy represents the CryptoAPI compatible Enhanced Cryptographic Provider
-	ProviderMSLegacy = "Microsoft Enhanced Cryptographic Provider v1.0"
 
 	// Chain resolution constants
 	hcceLocalMachine                  = windows.Handle(0x01) // HCCE_LOCAL_MACHINE
@@ -300,17 +295,17 @@ type WinCertStore struct {
 
 // OpenWinCertStore creates a WinCertStore with keys accessible by all users on a machine.
 // Call Close() when finished using the store.
-func OpenWinCertStore(provider, container string, issuers, intermediateIssuers []string, legacyKey bool) (*WinCertStore, error) {
-	return openWinCertStore(provider, container, issuers, intermediateIssuers, legacyKey, false)
+func OpenWinCertStore(provider, container string, issuers, intermediateIssuers []string) (*WinCertStore, error) {
+	return openWinCertStore(provider, container, issuers, intermediateIssuers, false)
 }
 
 // OpenWinCertStoreCurrentUser creates a WinCertStore with keys accessible by current user.
 // Call Close() when finished using the store.
-func OpenWinCertStoreCurrentUser(provider, container string, issuers, intermediateIssuers []string, legacyKey bool) (*WinCertStore, error) {
-	return openWinCertStore(provider, container, issuers, intermediateIssuers, legacyKey, true)
+func OpenWinCertStoreCurrentUser(provider, container string, issuers, intermediateIssuers []string) (*WinCertStore, error) {
+	return openWinCertStore(provider, container, issuers, intermediateIssuers, true)
 }
 
-func openWinCertStore(provider, container string, issuers, intermediateIssuers []string, legacyKey, currentUser bool) (*WinCertStore, error) {
+func openWinCertStore(provider, container string, issuers, intermediateIssuers []string, currentUser bool) (*WinCertStore, error) {
 	// Open a handle to the crypto provider we will use for private key operations
 	cngProv, err := openProvider(provider)
 	if err != nil {
@@ -324,11 +319,6 @@ func openWinCertStore(provider, container string, issuers, intermediateIssuers [
 		intermediateIssuers: intermediateIssuers,
 		container:           container,
 		stores:              make(map[string]*storeHandle),
-	}
-
-	if legacyKey {
-		wcs.keyStorageFlags = ncryptWriteKeyToLegacyStore
-		wcs.ProvName = ProviderMSLegacy
 	}
 
 	if !currentUser {
@@ -574,11 +564,6 @@ func (w *WinCertStore) Link() error {
 	deck.Infof("Successfully linked to existing system certificate with serial %s.", cert.SerialNumber)
 	fmt.Fprintf(os.Stdout, "Successfully linked to existing system certificate with serial %s.\n", cert.SerialNumber)
 
-	// Link legacy crypto only if requested.
-	if w.ProvName == ProviderMSLegacy {
-		return w.linkLegacy()
-	}
-
 	return nil
 }
 
@@ -608,51 +593,6 @@ func (s *storeHandle) Close() error {
 	if s.handle != nil {
 		return windows.CertCloseStore(*s.handle, 1)
 	}
-	return nil
-}
-
-// linkLegacy will associate the private key for a system certificate backed by cryptoAPI to
-// the copy of the certificate stored in the user store. This makes the key available to legacy
-// applications which may require it be specifically present in the users store to be read.
-func (w *WinCertStore) linkLegacy() error {
-	if w.ProvName != ProviderMSLegacy {
-		return fmt.Errorf("cannot link legacy key, Provider mismatch: got %q, want %q", w.ProvName, ProviderMSLegacy)
-	}
-	deck.Info("Linking legacy key to the user private store.")
-
-	cert, context, err := w.cert(w.issuers, my, certStoreLocalMachine)
-	if err != nil {
-		return fmt.Errorf("cert lookup returned: %v", err)
-	}
-	if context == nil {
-		return errors.New("cert lookup returned: nil")
-	}
-
-	// Lookup the private key for the certificate.
-	k, err := w.CertKey(context)
-	if err != nil {
-		return fmt.Errorf("unable to find legacy private key for %s: %v", cert.SerialNumber, err)
-	}
-	if k == nil {
-		return errors.New("private key lookup returned: nil")
-	}
-	if k.LegacyContainer == "" {
-		return fmt.Errorf("unable to find legacy private key for %s: container was empty", cert.SerialNumber)
-	}
-
-	// Generate the path to the expected current user's private key file.
-	sid, err := UserSID()
-	if err != nil {
-		return fmt.Errorf("unable to determine user SID: %v", err)
-	}
-	_, file := filepath.Split(k.LegacyContainer)
-	userContainer := fmt.Sprintf(`%s\Microsoft\Crypto\RSA\%s\%s`, os.Getenv("AppData"), sid, file)
-
-	// Link the private key to the users private key store.
-	if err := copyFile(k.LegacyContainer, userContainer); err != nil {
-		return err
-	}
-	deck.Infof("Legacy key %q was located and linked to the user store.", k.LegacyContainer)
 	return nil
 }
 
@@ -766,11 +706,10 @@ func (w *WinCertStore) CertificateChain() ([][]*x509.Certificate, error) {
 
 // Key implements crypto.Signer and crypto.Decrypter for key based operations.
 type Key struct {
-	handle          uintptr
-	pub             crypto.PublicKey
-	Container       string
-	LegacyContainer string
-	AlgorithmGroup  string
+	handle         uintptr
+	pub            crypto.PublicKey
+	Container      string
+	AlgorithmGroup string
 }
 
 // Public exports a public key to implement crypto.Signer
@@ -992,16 +931,9 @@ func decrypt(kh uintptr, blob []byte, padding oaepPaddingInfo, flags uint32) ([]
 	return plainText[:size], nil
 }
 
-// SetACL sets the requested permissions on the private key. If a
-// cryptoAPI compatible copy of the key is present, the same ACL is set.
+// SetACL sets the requested permissions on the private key.
 func (k *Key) SetACL(access string, sid string, perm string) error {
-	if err := setACL(k.Container, access, sid, perm); err != nil {
-		return err
-	}
-	if k.LegacyContainer == "" {
-		return nil
-	}
-	return setACL(k.LegacyContainer, access, sid, perm)
+	return setACL(k.Container, access, sid, perm)
 }
 
 // setACL sets permissions for the private key by wrapping the Microsoft
@@ -1219,15 +1151,12 @@ func keyMetadata(kh uintptr, store *WinCertStore) (*Key, error) {
 		return nil, fmt.Errorf("unable to determine provider implementation: %v", err)
 	}
 
-	// Populate key storage locations for software backed keys.
-	var lc string
-
 	// Functions like cert() pull certs from the local store *regardless*
 	// of the provider OpenWinCertStore was given. This means we cannot rely on
 	// store.Prov to tell us which provider a given key resides in. Instead, we
 	// lookup the provider directly from the key properties.
 	if impl == nCryptImplSoftwareFlag {
-		uc, lc, err = softwareKeyContainers(uc, store.storeDomain())
+		uc, err = softwareKeyContainers(uc, store.storeDomain())
 		if err != nil {
 			return nil, err
 		}
@@ -1259,7 +1188,7 @@ func keyMetadata(kh uintptr, store *WinCertStore) (*Key, error) {
 		}
 	}
 
-	return &Key{handle: kh, pub: pub, Container: uc, LegacyContainer: lc, AlgorithmGroup: alg}, nil
+	return &Key{handle: kh, pub: pub, Container: uc, AlgorithmGroup: alg}, nil
 }
 
 func getProperty(kh uintptr, property *uint16) ([]byte, error) {
@@ -1553,86 +1482,36 @@ func copyFile(from, to string) error {
 	return nil
 }
 
-// softwareKeyContainers returns the file path for a software backed key. If the key
-// was finalized with with NCRYPT_WRITE_KEY_TO_LEGACY_STORE_FLAG, it also returns its
-// equivalent CryptoAPI key file path.
+// softwareKeyContainers returns the file path for a software backed key.
 // https://docs.microsoft.com/en-us/windows/win32/api/ncrypt/nf-ncrypt-ncryptfinalizekey.
-func softwareKeyContainers(uniqueID string, storeDomain uint32) (string, string, error) {
-	var cngRoot, capiRoot string
+func softwareKeyContainers(uniqueID string, storeDomain uint32) (string, error) {
+	var cngRoot string
 	switch storeDomain {
 	case certStoreLocalMachine:
 		cngRoot = os.Getenv("ProgramData") + `\Microsoft\Crypto\Keys\`
-		capiRoot = os.Getenv("ProgramData") + `\Microsoft\Crypto\RSA\MachineKeys\`
 	case certStoreCurrentUser:
 		cngRoot = os.Getenv("AppData") + `\Microsoft\Crypto\Keys\`
-		sid, err := UserSID()
-		if err != nil {
-			return "", "", fmt.Errorf("unable to determine user SID: %v", err)
-		}
-		capiRoot = fmt.Sprintf(`%s\Microsoft\Crypto\RSA\%s\`, os.Getenv("AppData"), sid)
 	default:
-		return "", "", fmt.Errorf("unexpected store domain %d", storeDomain)
+		return "", fmt.Errorf("unexpected store domain %d", storeDomain)
 	}
 
 	// Determine the key type, so that we know which container we are
 	// working with.
-	var keyType, cng, capi string
+	var keyType, cng string
 	if _, err := os.Stat(cngRoot + uniqueID); err == nil {
 		keyType = "CNG"
-	}
-	if _, err := os.Stat(capiRoot + uniqueID); err == nil {
-		keyType = "CAPI"
 	}
 
 	// Generate the container path for the keyType we already have,
 	// and lookup the container path for the keyType we need to infer.
-	var err error
 	switch keyType {
 	case "CNG":
 		cng = cngRoot + uniqueID
-		capi, err = keyMatch(cng, capiRoot)
-		if err != nil {
-			return "", "", fmt.Errorf("error locating legacy key: %v", err)
-		}
-	case "CAPI":
-		capi = capiRoot + uniqueID
-		cng, err = keyMatch(capi, cngRoot)
-		if err != nil {
-			return "", "", fmt.Errorf("unable to locate CNG key: %v", err)
-		}
-		if cng == "" {
-			return "", "", errors.New("CNG key was empty")
-		}
 	default:
-		return "", "", fmt.Errorf("unexpected key type %q", keyType)
+		return "", fmt.Errorf("unexpected key type %q", keyType)
 	}
 
-	return cng, capi, nil
-}
-
-// keyMatch takes a known path to a private key and searches for a
-// matching key in a provided directory.
-func keyMatch(keyPath, dir string) (string, error) {
-	key, err := os.Stat(keyPath)
-	if err != nil {
-		return "", fmt.Errorf("unable to determine key creation date: %v", err)
-	}
-	files, err := ioutil.ReadDir(dir)
-	if err != nil {
-		return "", fmt.Errorf("unable to locate search directory: %v", err)
-	}
-	// A matching key is present in the target directory when it has a modified
-	// timestamp within 5 minutes of the known key. Checking the timestamp is
-	// necessary to select the right key. Typically, there are several machine
-	// keys present, only one of which was created at the same time as the
-	// known key.
-	for _, f := range files {
-		age := int(key.ModTime().Sub(f.ModTime()) / time.Second)
-		if age >= -300 && age < 300 {
-			return dir + f.Name(), nil
-		}
-	}
-	return "", nil
+	return cng, nil
 }
 
 // Verify interface conformance.
