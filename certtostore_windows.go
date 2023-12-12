@@ -42,10 +42,10 @@ import (
 	"unsafe"
 
 	"github.com/google/deck"
-	"golang.org/x/crypto/cryptobyte/asn1"
-	"golang.org/x/crypto/cryptobyte"
-	"golang.org/x/sys/windows"
 	"github.com/hashicorp/go-multierror"
+	"golang.org/x/crypto/cryptobyte"
+	"golang.org/x/crypto/cryptobyte/asn1"
+	"golang.org/x/sys/windows"
 )
 
 // WinCertStorage provides windows-specific additions to the CertStorage interface.
@@ -336,16 +336,6 @@ func openWinCertStore(provider, container string, issuers, intermediateIssuers [
 	}
 
 	return wcs, nil
-}
-
-// certContextToX509 creates an x509.Certificate from a Windows cert context.
-func certContextToX509(ctx *windows.CertContext) (*x509.Certificate, error) {
-	var der []byte
-	slice := (*reflect.SliceHeader)(unsafe.Pointer(&der))
-	slice.Data = uintptr(unsafe.Pointer(ctx.EncodedCert))
-	slice.Len = int(ctx.Length)
-	slice.Cap = int(ctx.Length)
-	return x509.ParseCertificate(append([]byte{}, der...))
 }
 
 // extractSimpleChain extracts the requested certificate chain from a CertSimpleChain.
