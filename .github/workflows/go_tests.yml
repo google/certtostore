@@ -7,12 +7,12 @@ jobs:
       - name: Install Go
         uses: actions/setup-go@v3
         with:
-          go-version: 1.18.x
+          go-version: 1.22.x
 
       - name: Check out code into the Go module directory
         uses: actions/checkout@v3
 
-      # false positives: golang/go#41205
+      # false positives: https://github.com/golang/go/issues/41205
       #- name: Run vet
       #  run: go vet ./...
 
