@@ -99,10 +99,12 @@ const (
 	certStoreLocalMachineID = 2                                               // CERT_SYSTEM_STORE_LOCAL_MACHINE_ID
 	infoIssuerFlag          = 4                                               // CERT_INFO_ISSUER_FLAG
 	compareNameStrW         = 8                                               // CERT_COMPARE_NAME_STR_A
+	certCompareSignHash     = 14											  // CERT_COMPARE_SIGNATURE_HASH
 	compareShift            = 16                                              // CERT_COMPARE_SHIFT
 	findIssuerStr           = compareNameStrW<<compareShift | infoIssuerFlag  // CERT_FIND_ISSUER_STR_W
 	signatureKeyUsage       = 0x80                                            // CERT_DIGITAL_SIGNATURE_KEY_USAGE
 	ncryptKeySpec           = 0xFFFFFFFF                                      // CERT_NCRYPT_KEY_SPEC
+	findSignatureStr        = certCompareSignHash<<compareShift			      // CERT_FIND_SIGNATURE_HASH
 
 	// Legacy CryptoAPI flags
 	bCryptPadPKCS1 uintptr = 0x2
@@ -491,6 +493,51 @@ func (w *WinCertStore) cert(issuers []string, searchRoot *uint16, store uint32) 
 		}
 
 		cert = xc
+		break
+	}
+	if cert == nil {
+		return nil, nil, nil
+	}
+	return cert, prev, nil
+}
+
+func (w *WinCertStore) findCertWithSignature(signs []string, searchRoot *uint16, store uint32) (*x509.Certificate, *windows.CertContext, error) {
+	h, err := w.storeHandle(store, searchRoot)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	var prev *windows.CertContext
+	var cert *x509.Certificate
+	for _, sign := range signs {
+		i, err := windows.UTF16PtrFromString(sign)
+		if err != nil {
+			return nil, nil, err
+		}
+
+		// pass 0 as the third parameter because it is not used
+		// https://msdn.microsoft.com/en-us/library/windows/desktop/aa376064(v=vs.85).aspx
+		nc, err := findCert(h, encodingX509ASN|encodingPKCS7, 0, findSignatureStr, i, prev)
+		if err != nil {
+			return nil, nil, fmt.Errorf("finding certificates: %v", err)
+		}
+		if nc == nil {
+			// No certificate found
+			continue
+		}
+		prev = nc
+		if (intendedKeyUsage(encodingX509ASN, nc) & signatureKeyUsage) == 0 {
+			continue
+		}
+
+		// Extract the DER-encoded certificate from the cert context.
+		xc, err := certContextToX509(nc)
+		if err != nil {
+			continue
+		}
+
+		cert = xc
+		fmt.Printf("Found certification")
 		break
 	}
 	if cert == nil {
