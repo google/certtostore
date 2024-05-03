@@ -465,8 +465,6 @@ func (w *WinCertStore) cert(issuers []string, searchRoot *uint16, store uint32, 
 
 	if len(prevCtx) == 1 {
 		prev = prevCtx[0]
-	} else {
-		return nil, nil, fmt.Errorf("up to one prevCtx can be provided")
 	}
 
 	var cert *x509.Certificate
