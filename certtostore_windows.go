@@ -109,10 +109,13 @@ const (
 	bCryptPadPSS   uintptr = 0x8
 
 	// Magic numbers for public key blobs.
-	rsa1Magic = 0x31415352 // "RSA1" BCRYPT_RSAPUBLIC_MAGIC
-	ecs1Magic = 0x31534345 // "ECS1" BCRYPT_ECDSA_PUBLIC_P256_MAGIC
-	ecs3Magic = 0x33534345 // "ECS3" BCRYPT_ECDSA_PUBLIC_P384_MAGIC
-	ecs5Magic = 0x35534345 // "ECS5" BCRYPT_ECDSA_PUBLIC_P521_MAGIC
+	rsa1Magic      = 0x31415352 // "RSA1" BCRYPT_RSAPUBLIC_MAGIC
+	ecdsaP256Magic = 0x31534345 // BCRYPT_ECDSA_PUBLIC_P256_MAGIC
+	ecdsaP384Magic = 0x33534345 // BCRYPT_ECDSA_PUBLIC_P384_MAGIC
+	ecdsaP521Magic = 0x35534345 // BCRYPT_ECDSA_PUBLIC_P521_MAGIC
+	ecdhP256Magic  = 0x314B4345 // BCRYPT_ECDH_PUBLIC_P256_MAGIC
+	ecdhP384Magic  = 0x334B4345 // BCRYPT_ECDH_PUBLIC_P384_MAGIC
+	ecdhP521Magic  = 0x354B4345 // BCRYPT_ECDH_PUBLIC_P521_MAGIC
 
 	// ncrypt.h constants
 	ncryptPersistFlag           = 0x80000000 // NCRYPT_PERSIST_FLAG
@@ -164,9 +167,12 @@ var (
 
 	// curveIDs maps bcrypt key blob magic numbers to elliptic curves.
 	curveIDs = map[uint32]elliptic.Curve{
-		ecs1Magic: elliptic.P256(), // BCRYPT_ECDSA_PUBLIC_P256_MAGIC
-		ecs3Magic: elliptic.P384(), // BCRYPT_ECDSA_PUBLIC_P384_MAGIC
-		ecs5Magic: elliptic.P521(), // BCRYPT_ECDSA_PUBLIC_P521_MAGIC
+		ecdsaP256Magic: elliptic.P256(), // BCRYPT_ECDSA_PUBLIC_P256_MAGIC
+		ecdsaP384Magic: elliptic.P384(), // BCRYPT_ECDSA_PUBLIC_P384_MAGIC
+		ecdsaP521Magic: elliptic.P521(), // BCRYPT_ECDSA_PUBLIC_P521_MAGIC
+		ecdhP256Magic:  elliptic.P256(), // BCRYPT_ECDH_PUBLIC_P256_MAGIC
+		ecdhP384Magic:  elliptic.P384(), // BCRYPT_ECDH_PUBLIC_P384_MAGIC
+		ecdhP521Magic:  elliptic.P521(), // BCRYPT_ECDH_PUBLIC_P521_MAGIC
 	}
 
 	// curveNames maps bcrypt curve names to elliptic curves. We use it
@@ -771,7 +777,7 @@ func (k Key) Public() crypto.PublicKey {
 // Sign returns the signature of a hash to implement crypto.Signer
 func (k Key) Sign(_ io.Reader, digest []byte, opts crypto.SignerOpts) ([]byte, error) {
 	switch k.AlgorithmGroup {
-	case "ECDSA":
+	case "ECDSA", "ECDH":
 		return signECDSA(k.handle, digest)
 	case "RSA":
 		return signRSA(k.handle, digest, opts)
@@ -1229,7 +1235,7 @@ func keyMetadata(kh uintptr, store *WinCertStore) (*Key, error) {
 	}
 	var pub crypto.PublicKey
 	switch alg {
-	case "ECDSA":
+	case "ECDSA", "ECDH":
 		buf, err := export(kh, bCryptECCPublicBlob)
 		if err != nil {
 			return nil, fmt.Errorf("failed to export ECC public key: %v", err)
