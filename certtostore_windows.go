@@ -438,8 +438,8 @@ func (w *WinCertStore) Cert() (*x509.Certificate, error) {
 // such as looking up the private key with CertKey().
 //
 // You must call FreeCertContext on the context after use.
-func (w *WinCertStore) CertWithContext() (*x509.Certificate, *windows.CertContext, error) {
-	c, ctx, err := w.cert(w.issuers, my, w.storeDomain())
+func (w *WinCertStore) CertWithContext(prev ...*windows.CertContext) (*x509.Certificate, *windows.CertContext, error) {
+	c, ctx, err := w.cert(w.issuers, my, w.storeDomain(), prev...)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -455,13 +455,18 @@ func (w *WinCertStore) CertWithContext() (*x509.Certificate, *windows.CertContex
 
 // cert is a helper function to lookup certificates based on a known issuer.
 // store is used to specify which store to perform the lookup in (system or user).
-func (w *WinCertStore) cert(issuers []string, searchRoot *uint16, store uint32) (*x509.Certificate, *windows.CertContext, error) {
+func (w *WinCertStore) cert(issuers []string, searchRoot *uint16, store uint32, prevCtx ...*windows.CertContext) (*x509.Certificate, *windows.CertContext, error) {
 	h, err := w.storeHandle(store, searchRoot)
 	if err != nil {
 		return nil, nil, err
 	}
 
 	var prev *windows.CertContext
+
+	if len(prevCtx) == 1 {
+		prev = prevCtx[0]
+	}
+
 	var cert *x509.Certificate
 	for _, issuer := range issuers {
 		i, err := windows.UTF16PtrFromString(issuer)
