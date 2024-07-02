@@ -22,7 +22,7 @@ import (
 	"os"
 	"os/user"
 
-	"github.com/StackExchange/wmi"
+	"github.com/yusufpapurcu/wmi"
 )
 
 // User will obtain the current user from the OS.
