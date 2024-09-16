@@ -42,10 +42,10 @@ import (
 	"unsafe"
 
 	"github.com/google/deck"
-	"golang.org/x/crypto/cryptobyte/asn1"
-	"golang.org/x/crypto/cryptobyte"
-	"golang.org/x/sys/windows"
 	"github.com/hashicorp/go-multierror"
+	"golang.org/x/crypto/cryptobyte"
+	"golang.org/x/crypto/cryptobyte/asn1"
+	"golang.org/x/sys/windows"
 )
 
 // WinCertStorage provides windows-specific additions to the CertStorage interface.
@@ -461,42 +461,47 @@ func (w *WinCertStore) cert(issuers []string, searchRoot *uint16, store uint32) 
 		return nil, nil, err
 	}
 
-	var prev *windows.CertContext
-	var cert *x509.Certificate
 	for _, issuer := range issuers {
 		i, err := windows.UTF16PtrFromString(issuer)
 		if err != nil {
 			return nil, nil, err
 		}
 
-		// pass 0 as the third parameter because it is not used
-		// https://msdn.microsoft.com/en-us/library/windows/desktop/aa376064(v=vs.85).aspx
-		nc, err := findCert(h, encodingX509ASN|encodingPKCS7, 0, findIssuerStr, i, prev)
-		if err != nil {
-			return nil, nil, fmt.Errorf("finding certificates: %v", err)
-		}
-		if nc == nil {
-			// No certificate found
-			continue
-		}
-		prev = nc
-		if (intendedKeyUsage(encodingX509ASN, nc) & signatureKeyUsage) == 0 {
-			continue
+		var cert *x509.Certificate
+		var prev *windows.CertContext
+		for cert == nil {
+			// pass 0 as the third parameter because it is not used
+			// https://msdn.microsoft.com/en-us/library/windows/desktop/aa376064(v=vs.85).aspx
+			nc, err := findCert(h, encodingX509ASN|encodingPKCS7, 0, findIssuerStr, i, prev)
+			if err != nil {
+				return nil, nil, fmt.Errorf("finding certificates: %v", err)
+			}
+			if nc == nil {
+				// No certificate found, move on to the next issuer.
+				break
+			}
+			prev = nc
+			if (intendedKeyUsage(encodingX509ASN, nc) & signatureKeyUsage) == 0 {
+				// This certificate is not intended for signing, so skip it.
+				continue
+			}
+
+			// Extract the DER-encoded certificate from the cert context.
+			xc, err := certContextToX509(nc)
+			if err != nil {
+				// If we can't parse the cert, skip it.
+				continue
+			}
+
+			cert = xc
 		}
 
-		// Extract the DER-encoded certificate from the cert context.
-		xc, err := certContextToX509(nc)
-		if err != nil {
-			continue
+		// Certificate found
+		if cert != nil {
+			return cert, prev, nil
 		}
-
-		cert = xc
-		break
 	}
-	if cert == nil {
-		return nil, nil, nil
-	}
-	return cert, prev, nil
+	return nil, nil, nil
 }
 
 func freeObject(h uintptr) error {
