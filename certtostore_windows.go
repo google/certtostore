@@ -1232,7 +1232,7 @@ func keyMetadata(kh uintptr, store *WinCertStore) (*Key, error) {
 	// of the provider OpenWinCertStore was given. This means we cannot rely on
 	// store.Prov to tell us which provider a given key resides in. Instead, we
 	// lookup the provider directly from the key properties.
-	if impl == nCryptImplSoftwareFlag {
+	if (impl & nCryptImplSoftwareFlag) != 0 {
 		uc, lc, err = softwareKeyContainers(uc, store.storeDomain())
 		if err != nil {
 			return nil, err
