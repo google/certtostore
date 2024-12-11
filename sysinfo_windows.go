@@ -1,3 +1,4 @@
+//go:build windows
 // +build windows
 
 // Copyright 2017 Google Inc.
@@ -23,6 +24,11 @@ import (
 	"os/user"
 
 	"github.com/StackExchange/wmi"
+)
+
+var (
+	// ErrNoNetworkAdapter is returned when no network adapter is detected.
+	ErrNoNetworkAdapter = errors.New("network adapter not detected")
 )
 
 // User will obtain the current user from the OS.
@@ -109,7 +115,7 @@ func NetInfo() ([]string, error) {
 	}
 
 	if len(netInfo) == 0 {
-		return nil, fmt.Errorf("network adapter not detected. got: %d want: >= 1", len(netInfo))
+		return nil, fmt.Errorf("%w got: %d want: >= 1", ErrNoNetworkAdapter, len(netInfo))
 	}
 
 	var macs []string
