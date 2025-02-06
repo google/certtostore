@@ -64,7 +64,8 @@ func generateCertificate(caStore CertStorage) (CertStorage, error) {
 		Algorithm: RSA,
 		Size:      2048,
 	}
-	if _, err := leafStore.Generate(opts); err != nil {
+	leafSigner, err := leafStore.Generate(opts)
+	if err != nil {
 		return nil, fmt.Errorf("leafStore.Generate(%v): %v", opts, err)
 	}
 	// Sign the leaf cert request with the CA certificate.
@@ -79,7 +80,7 @@ func generateCertificate(caStore CertStorage) (CertStorage, error) {
 	if err != nil {
 		return nil, fmt.Errorf("caStore.Key: %v", err)
 	}
-	der, err := x509.CreateCertificate(rand.Reader, &template, caCrt, caKey.Public(), caKey)
+	der, err := x509.CreateCertificate(rand.Reader, &template, caCrt, leafSigner.Public(), caKey)
 	if err != nil {
 		return nil, fmt.Errorf("x509.CreateCertificate: %v", err)
 	}
@@ -149,6 +150,47 @@ func TestCredential(t *testing.T) {
 	leafHash := sha256.Sum256(leafCrt.RawTBSCertificate)
 	if err := rsa.VerifyPKCS1v15(rsaPub, crypto.SHA256, leafHash[:], leafCrt.Signature); err != nil {
 		t.Fatalf("error verifying certificate signature: %v", err)
+	}
+}
+
+func verifySig(pub crypto.PublicKey, sig []byte, digest []byte) error {
+	switch pub := pub.(type) {
+	case *rsa.PublicKey:
+		return rsa.VerifyPKCS1v15(pub, crypto.SHA256, digest, sig)
+	default:
+		return fmt.Errorf("unsupported public key type: %T", pub)
+	}
+}
+
+func TestSign(t *testing.T) {
+	testmsg := []byte("test")
+	digest := sha256.Sum256(testmsg)
+	ca := NewFileStorage(testdata.CAPath())
+	// Use the CA CertStorage to issue a leaf cert.
+	leafStore, err := generateCertificate(ca)
+	if err != nil {
+		t.Fatalf("error generating certificate: %v", err)
+	}
+	k, err := leafStore.Key()
+	if err != nil {
+		t.Fatalf("error retrieving key: %v", err)
+	}
+
+	sig, err := k.Sign(rand.Reader, digest[:], crypto.SHA256)
+	if err != nil {
+		t.Fatalf("error signing: %v", err)
+	}
+	if len(sig) == 0 {
+		t.Fatalf("signature is empty")
+	}
+
+	pub := k.Public()
+	if pub == nil {
+		t.Fatal("public key is nil")
+	}
+	err = verifySig(pub, sig, digest[:])
+	if err != nil {
+		t.Fatalf("error verifying signature: %v", err)
 	}
 }
 
