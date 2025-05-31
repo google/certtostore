@@ -42,10 +42,10 @@ import (
 	"unsafe"
 
 	"github.com/google/deck"
-	"golang.org/x/crypto/cryptobyte/asn1"
-	"golang.org/x/crypto/cryptobyte"
-	"golang.org/x/sys/windows"
 	"github.com/hashicorp/go-multierror"
+	"golang.org/x/crypto/cryptobyte"
+	"golang.org/x/crypto/cryptobyte/asn1"
+	"golang.org/x/sys/windows"
 )
 
 // WinCertStorage provides windows-specific additions to the CertStorage interface.
@@ -1084,7 +1084,7 @@ func (w *WinCertStore) CertKey(cert *windows.CertContext) (*Key, error) {
 		return nil, fmt.Errorf("wrong mustFree [%d != 0]", mustFree)
 	}
 	if spec != ncryptKeySpec {
-		return nil, fmt.Errorf("wrong keySpec [%d != %d]", spec, ncryptKeySpec)
+		return nil, fmt.Errorf("wrong keySpec [%v != %v]", spec, ncryptKeySpec)
 	}
 
 	return keyMetadata(kh, w)
