@@ -462,34 +462,6 @@ func OpenWinCertStoreWithOptions(opts WinCertStoreOptions) (*WinCertStore, error
 	return wcs, nil
 }
 
-func openWinCertStore(provider, container string, issuers, intermediateIssuers []string, legacyKey, currentUser bool) (*WinCertStore, error) {
-	// Open a handle to the crypto provider we will use for private key operations
-	cngProv, err := openProvider(provider)
-	if err != nil {
-		return nil, fmt.Errorf("unable to open crypto provider or provider not available: %v", err)
-	}
-
-	wcs := &WinCertStore{
-		Prov:                cngProv,
-		ProvName:            provider,
-		issuers:             issuers,
-		intermediateIssuers: intermediateIssuers,
-		container:           container,
-		stores:              make(map[string]*storeHandle),
-	}
-
-	if legacyKey {
-		wcs.keyStorageFlags = ncryptWriteKeyToLegacyStore
-		wcs.ProvName = ProviderMSLegacy
-	}
-
-	if !currentUser {
-		wcs.keyAccessFlags = nCryptMachineKey
-	}
-
-	return wcs, nil
-}
-
 // certContextToX509 creates an x509.Certificate from a Windows cert context.
 func certContextToX509(ctx *windows.CertContext) (*x509.Certificate, error) {
 	var der []byte
