@@ -102,7 +102,6 @@ const (
 	compareShift            = 16                                              // CERT_COMPARE_SHIFT
 	findIssuerStr           = compareNameStrW<<compareShift | infoIssuerFlag  // CERT_FIND_ISSUER_STR_W
 	signatureKeyUsage       = 0x80                                            // CERT_DIGITAL_SIGNATURE_KEY_USAGE
-	ncryptKeySpec           = 0xFFFFFFFF                                      // CERT_NCRYPT_KEY_SPEC
 
 	// Legacy CryptoAPI flags
 	bCryptPadPKCS1 uintptr = 0x2
@@ -147,6 +146,7 @@ const (
 	certChainRevocationCheckCacheOnly = 0x80000000           // CERT_CHAIN_REVOCATION_CHECK_CACHE_ONLY
 )
 
+const ncryptKeySpec uint32 = 0xFFFFFFFF // CERT_NCRYPT_KEY_SPEC
 var (
 	// Key blob type constants.
 	bCryptRSAPublicBlob = wide("RSAPUBLICBLOB")
@@ -1084,7 +1084,7 @@ func (w *WinCertStore) CertKey(cert *windows.CertContext) (*Key, error) {
 		return nil, fmt.Errorf("wrong mustFree [%d != 0]", mustFree)
 	}
 	if spec != ncryptKeySpec {
-		return nil, fmt.Errorf("wrong keySpec [%v != %v]", spec, ncryptKeySpec)
+		return nil, fmt.Errorf("wrong keySpec [%d != %d]", spec, ncryptKeySpec)
 	}
 
 	return keyMetadata(kh, w)
