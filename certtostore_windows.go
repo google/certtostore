@@ -787,7 +787,7 @@ func (w *WinCertStore) linkLegacy() error {
 // If it is unable to remove any certificates, it returns an error.
 func (w *WinCertStore) Remove(removeSystem bool) error {
 	if w.isReadOnly() {
-		return fmt.Errorf("cannot store certificates in a read-only store")
+		return fmt.Errorf("cannot remove certificates from a read-only store")
 	}
 	for _, issuer := range w.issuers {
 		if err := w.remove(issuer, removeSystem); err != nil {
