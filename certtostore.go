@@ -18,6 +18,8 @@ package certtostore
 import (
 	"bytes"
 	"crypto"
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/tls"
@@ -28,6 +30,10 @@ import (
 	"io/ioutil"
 	"os"
 	"path/filepath"
+
+	// BEGIN-INTERNAL
+	// internal content #1
+	// END-INTERNAL
 )
 
 const (
@@ -106,7 +112,7 @@ type FileStorage struct {
 	certFile   string
 	caCertFile string
 	keyFile    string
-	key        *rsa.PrivateKey
+	key        crypto.Signer
 }
 
 // NewFileStorage sets up a new file storage struct for use by StoreCert.
@@ -166,14 +172,28 @@ func (f FileStorage) CertificateChain() ([][]*x509.Certificate, error) {
 	return certificateChain(cert, intermediate)
 }
 
-// Generate creates a new RSA private key and returns a signer that can be used to make a CSR for the key.
+var ecdsaCurves = map[int]elliptic.Curve{
+	256: elliptic.P256(),
+	384: elliptic.P384(),
+	521: elliptic.P521(),
+}
+
+// Generate creates a new ECDSA or RSA private key and returns a signer that can be used to make a CSR for the key.
 func (f *FileStorage) Generate(opts GenerateOpts) (crypto.Signer, error) {
+	var err error
 	switch opts.Algorithm {
 	case RSA:
-		var err error
 		f.key, err = rsa.GenerateKey(rand.Reader, opts.Size)
 		return f.key, err
+	case EC:
+		curve, ok := ecdsaCurves[opts.Size]
+		if !ok {
+			return nil, fmt.Errorf("invalid ecdsa curve size: %d", opts.Size)
+		}
+		f.key, err = ecdsa.GenerateKey(curve, rand.Reader)
+		return f.key, err
 	default:
+
 		return nil, fmt.Errorf("unsupported key type: %q", opts.Algorithm)
 	}
 }
@@ -219,6 +239,8 @@ func (f *FileStorage) Store(cert *x509.Certificate, intermediate *x509.Certifica
 }
 
 // Sign returns a signature for the provided digest.
+// The opts are passed to the private key's Sign method, as per the crypto.Signer interface.
+// https://pkg.go.dev/crypto#Signer
 func (f FileStorage) Sign(rand io.Reader, digest []byte, opts crypto.SignerOpts) ([]byte, error) {
 	tlsCert, err := tls.LoadX509KeyPair(f.certFile, f.keyFile)
 	if err != nil {
@@ -232,6 +254,9 @@ func (f FileStorage) Sign(rand io.Reader, digest []byte, opts crypto.SignerOpts)
 }
 
 // Decrypt decrypts msg. Returns an error if not implemented.
+// The opts are passed to the private key's Decrypt method, as per the crypto.Decrypter interface.
+// https://pkg.go.dev/crypto#Decrypter
+// Only RSA keys are supported for decryption.
 func (f FileStorage) Decrypt(rand io.Reader, msg []byte, opts crypto.DecrypterOpts) ([]byte, error) {
 	tlsCert, err := tls.LoadX509KeyPair(f.certFile, f.keyFile)
 	if err != nil {
