@@ -15,7 +15,9 @@
 package certtostore
 
 import (
+	"crypto/x509"
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -58,5 +60,494 @@ func TestGetPropertyStr(t *testing.T) {
 		if !errors.Is(err, tt.wantErr) {
 			t.Errorf("%s produced unexpected error: got %v, want %v", tt.desc, err, tt.wantErr)
 		}
+	}
+}
+
+func TestDefaultWinCertStoreOptions(t *testing.T) {
+	provider := ProviderMSSoftware
+	container := "TestContainer"
+	issuers := []string{"CN=Test CA"}
+	intermediateIssuers := []string{"CN=Intermediate CA"}
+	legacyKey := true
+
+	opts := DefaultWinCertStoreOptions(provider, container, issuers, intermediateIssuers, legacyKey)
+
+	if opts.Provider != provider {
+		t.Errorf("Provider: got %s, want %s", opts.Provider, provider)
+	}
+	if opts.Container != container {
+		t.Errorf("Container: got %s, want %s", opts.Container, container)
+	}
+	if len(opts.Issuers) != len(issuers) || opts.Issuers[0] != issuers[0] {
+		t.Errorf("Issuers: got %v, want %v", opts.Issuers, issuers)
+	}
+	if len(opts.IntermediateIssuers) != len(intermediateIssuers) || opts.IntermediateIssuers[0] != intermediateIssuers[0] {
+		t.Errorf("IntermediateIssuers: got %v, want %v", opts.IntermediateIssuers, intermediateIssuers)
+	}
+	if opts.LegacyKey != legacyKey {
+		t.Errorf("LegacyKey: got %t, want %t", opts.LegacyKey, legacyKey)
+	}
+	if opts.CurrentUser != false {
+		t.Errorf("CurrentUser: got %t, want %t", opts.CurrentUser, false)
+	}
+	if opts.StoreFlags != 0 {
+		t.Errorf("StoreFlags: got %d, want %d", opts.StoreFlags, 0)
+	}
+}
+
+func TestOpenWinCertStoreWithOptions(t *testing.T) {
+	tests := []struct {
+		name        string
+		opts        WinCertStoreOptions
+		expectError bool
+		errorMsg    string
+	}{
+		{
+			name: "valid_options_current_user",
+			opts: WinCertStoreOptions{
+				Provider:            ProviderMSSoftware,
+				Container:           "TestContainer",
+				Issuers:             []string{"CN=Test CA"},
+				IntermediateIssuers: []string{"CN=Intermediate CA"},
+				LegacyKey:           false,
+				CurrentUser:         true,
+				StoreFlags:          0,
+			},
+			expectError: false,
+		},
+		{
+			name: "valid_options_machine_store",
+			opts: WinCertStoreOptions{
+				Provider:            ProviderMSSoftware,
+				Container:           "TestContainer",
+				Issuers:             []string{"CN=Test CA"},
+				IntermediateIssuers: []string{"CN=Intermediate CA"},
+				LegacyKey:           false,
+				CurrentUser:         false,
+				StoreFlags:          0,
+			},
+			expectError: false,
+		},
+		{
+			name: "valid_options_with_readonly_flag",
+			opts: WinCertStoreOptions{
+				Provider:            ProviderMSSoftware,
+				Container:           "TestContainer",
+				Issuers:             []string{"CN=Test CA"},
+				IntermediateIssuers: []string{"CN=Intermediate CA"},
+				LegacyKey:           false,
+				CurrentUser:         true,
+				StoreFlags:          CertStoreReadOnly,
+			},
+			expectError: false,
+		},
+		{
+			name: "valid_options_with_multiple_flags",
+			opts: WinCertStoreOptions{
+				Provider:            ProviderMSSoftware,
+				Container:           "TestContainer",
+				Issuers:             []string{"CN=Test CA"},
+				IntermediateIssuers: []string{"CN=Intermediate CA"},
+				LegacyKey:           false,
+				CurrentUser:         true,
+				StoreFlags:          CertStoreReadOnly | CertStoreSaveToFile,
+			},
+			expectError: false,
+		},
+		{
+			name: "invalid_provider",
+			opts: WinCertStoreOptions{
+				Provider:            "NonExistentProvider",
+				Container:           "TestContainer",
+				Issuers:             []string{"CN=Test CA"},
+				IntermediateIssuers: []string{"CN=Intermediate CA"},
+				LegacyKey:           false,
+				CurrentUser:         true,
+				StoreFlags:          0,
+			},
+			expectError: true,
+			errorMsg:    "unable to open crypto provider",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store, err := OpenWinCertStoreWithOptions(tt.opts)
+
+			if tt.expectError {
+				if err == nil {
+					t.Errorf("Expected error but got none")
+				} else if !strings.Contains(err.Error(), tt.errorMsg) {
+					t.Errorf("Expected error to contain '%s', got: %v", tt.errorMsg, err)
+				}
+				return
+			}
+
+			if err != nil {
+				t.Errorf("Unexpected error: %v", err)
+				return
+			}
+
+			if store == nil {
+				t.Error("Expected non-nil store")
+				return
+			}
+
+			// Verify the store was configured correctly
+			if store.ProvName != tt.opts.Provider {
+				t.Errorf("Provider name: got %s, want %s", store.ProvName, tt.opts.Provider)
+			}
+
+			if store.container != tt.opts.Container {
+				t.Errorf("Container: got %s, want %s", store.container, tt.opts.Container)
+			}
+
+			if len(store.issuers) != len(tt.opts.Issuers) {
+				t.Errorf("Issuers length: got %d, want %d", len(store.issuers), len(tt.opts.Issuers))
+			}
+
+			if len(store.intermediateIssuers) != len(tt.opts.IntermediateIssuers) {
+				t.Errorf("IntermediateIssuers length: got %d, want %d", len(store.intermediateIssuers), len(tt.opts.IntermediateIssuers))
+			}
+
+			if store.storeFlags != tt.opts.StoreFlags {
+				t.Errorf("StoreFlags: got %d, want %d", store.storeFlags, tt.opts.StoreFlags)
+			}
+
+			// Test the isReadOnly method
+			expectedReadOnly := (tt.opts.StoreFlags & CertStoreReadOnly) != 0
+			if store.isReadOnly() != expectedReadOnly {
+				t.Errorf("isReadOnly(): got %t, want %t", store.isReadOnly(), expectedReadOnly)
+			}
+
+			// Clean up
+			if err := store.Close(); err != nil {
+				t.Errorf("Error closing store: %v", err)
+			}
+		})
+	}
+}
+
+func TestWinCertStore_isReadOnly(t *testing.T) {
+	tests := []struct {
+		name       string
+		storeFlags uint32
+		expected   bool
+	}{
+		{
+			name:       "not_readonly",
+			storeFlags: 0,
+			expected:   false,
+		},
+		{
+			name:       "readonly_only",
+			storeFlags: CertStoreReadOnly,
+			expected:   true,
+		},
+		{
+			name:       "readonly_with_other_flags",
+			storeFlags: CertStoreReadOnly | CertStoreSaveToFile,
+			expected:   true,
+		},
+		{
+			name:       "other_flags_without_readonly",
+			storeFlags: CertStoreSaveToFile,
+			expected:   false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := &WinCertStore{
+				storeFlags: tt.storeFlags,
+			}
+
+			result := store.isReadOnly()
+			if result != tt.expected {
+				t.Errorf("isReadOnly(): got %t, want %t", result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestWinCertStore_ReadOnlyOperations(t *testing.T) {
+	// Create a read-only store for testing
+	opts := WinCertStoreOptions{
+		Provider:            ProviderMSSoftware,
+		Container:           "TestReadOnlyContainer",
+		Issuers:             []string{"CN=Test CA"},
+		IntermediateIssuers: []string{"CN=Intermediate CA"},
+		LegacyKey:           false,
+		CurrentUser:         true,
+		StoreFlags:          CertStoreReadOnly,
+	}
+
+	store, err := OpenWinCertStoreWithOptions(opts)
+	if err != nil {
+		t.Fatalf("Failed to open read-only store: %v", err)
+	}
+	defer store.Close()
+
+	// Test that write operations are blocked
+	t.Run("Generate_blocked", func(t *testing.T) {
+		_, err := store.Generate(GenerateOpts{Algorithm: RSA, Size: 2048})
+		if err == nil {
+			t.Error("Expected Generate to fail in read-only mode")
+		}
+		if !strings.Contains(err.Error(), "read-only") {
+			t.Errorf("Expected error to mention read-only, got: %v", err)
+		}
+	})
+
+	t.Run("Store_blocked", func(t *testing.T) {
+		// Create a dummy certificate for testing
+		cert := &x509.Certificate{}
+		err := store.Store(cert, cert)
+		if err == nil {
+			t.Error("Expected Store to fail in read-only mode")
+		}
+		if !strings.Contains(err.Error(), "read-only") {
+			t.Errorf("Expected error to mention read-only, got: %v", err)
+		}
+	})
+
+	t.Run("StoreWithDisposition_blocked", func(t *testing.T) {
+		// Create a dummy certificate for testing
+		cert := &x509.Certificate{}
+		err := store.StoreWithDisposition(cert, cert, 1)
+		if err == nil {
+			t.Error("Expected StoreWithDisposition to fail in read-only mode")
+		}
+		if !strings.Contains(err.Error(), "read-only") {
+			t.Errorf("Expected error to mention read-only, got: %v", err)
+		}
+	})
+
+	t.Run("Remove_blocked", func(t *testing.T) {
+		err := store.Remove(false)
+		if err == nil {
+			t.Error("Expected Remove to fail in read-only mode")
+		}
+		if !strings.Contains(err.Error(), "read-only") {
+			t.Errorf("Expected error to mention read-only, got: %v", err)
+		}
+	})
+
+	t.Run("Link_blocked", func(t *testing.T) {
+		err := store.Link()
+		if err == nil {
+			t.Error("Expected Link to fail in read-only mode")
+		}
+		if !strings.Contains(err.Error(), "read-only") {
+			t.Errorf("Expected error to mention read-only, got: %v", err)
+		}
+	})
+}
+
+func TestWinCertStore_StoreDomain(t *testing.T) {
+	tests := []struct {
+		name        string
+		currentUser bool
+		storeFlags  uint32
+		expected    uint32
+	}{
+		{
+			name:        "machine_store_no_flags",
+			currentUser: false,
+			storeFlags:  0,
+			expected:    certStoreLocalMachine,
+		},
+		{
+			name:        "user_store_no_flags",
+			currentUser: true,
+			storeFlags:  0,
+			expected:    certStoreCurrentUser,
+		},
+		{
+			name:        "machine_store_with_readonly",
+			currentUser: false,
+			storeFlags:  CertStoreReadOnly,
+			expected:    certStoreLocalMachine,
+		},
+		{
+			name:        "user_store_with_multiple_flags",
+			currentUser: true,
+			storeFlags:  CertStoreReadOnly | CertStoreSaveToFile,
+			expected:    certStoreCurrentUser,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := &WinCertStore{
+				storeFlags: tt.storeFlags,
+			}
+
+			// Set the keyAccessFlags based on currentUser
+			if !tt.currentUser {
+				store.keyAccessFlags = nCryptMachineKey
+			}
+
+			result := store.storeDomain()
+			if result != tt.expected {
+				t.Errorf("storeDomain(): got %d, want %d", result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestWinCertStoreOptions_DeepCopy(t *testing.T) {
+	// Test that the slices are deep-copied to prevent external modification
+	originalIssuers := []string{"CN=Original CA"}
+	originalIntermediateIssuers := []string{"CN=Original Intermediate CA"}
+
+	opts := WinCertStoreOptions{
+		Provider:            ProviderMSSoftware,
+		Container:           "TestContainer",
+		Issuers:             originalIssuers,
+		IntermediateIssuers: originalIntermediateIssuers,
+		LegacyKey:           false,
+		CurrentUser:         true,
+		StoreFlags:          0,
+	}
+
+	store, err := OpenWinCertStoreWithOptions(opts)
+	if err != nil {
+		t.Fatalf("Failed to open store: %v", err)
+	}
+	defer store.Close()
+
+	// Modify the original slices
+	originalIssuers[0] = "CN=Modified CA"
+	originalIntermediateIssuers[0] = "CN=Modified Intermediate CA"
+
+	// Verify that the store's internal slices were not affected
+	if store.issuers[0] == "CN=Modified CA" {
+		t.Error("Store's issuers slice was not deep-copied")
+	}
+	if store.intermediateIssuers[0] == "CN=Modified Intermediate CA" {
+		t.Error("Store's intermediateIssuers slice was not deep-copied")
+	}
+
+	// Verify the correct values are preserved
+	if store.issuers[0] != "CN=Original CA" {
+		t.Errorf("Expected issuer 'CN=Original CA', got '%s'", store.issuers[0])
+	}
+	if store.intermediateIssuers[0] != "CN=Original Intermediate CA" {
+		t.Errorf("Expected intermediate issuer 'CN=Original Intermediate CA', got '%s'", store.intermediateIssuers[0])
+	}
+}
+
+func TestWinCertStoreOptions_LegacyKeyConfiguration(t *testing.T) {
+	tests := []struct {
+		name                 string
+		legacyKey            bool
+		expectedProvName     string
+		expectedStorageFlags uintptr
+	}{
+		{
+			name:                 "legacy_key_enabled",
+			legacyKey:            true,
+			expectedProvName:     ProviderMSLegacy,
+			expectedStorageFlags: ncryptWriteKeyToLegacyStore,
+		},
+		{
+			name:                 "legacy_key_disabled",
+			legacyKey:            false,
+			expectedProvName:     ProviderMSSoftware,
+			expectedStorageFlags: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			opts := WinCertStoreOptions{
+				Provider:            ProviderMSSoftware,
+				Container:           "TestContainer",
+				Issuers:             []string{"CN=Test CA"},
+				IntermediateIssuers: []string{"CN=Intermediate CA"},
+				LegacyKey:           tt.legacyKey,
+				CurrentUser:         true,
+				StoreFlags:          0,
+			}
+
+			store, err := OpenWinCertStoreWithOptions(opts)
+			if err != nil {
+				t.Fatalf("Failed to open store: %v", err)
+			}
+			defer store.Close()
+
+			if store.ProvName != tt.expectedProvName {
+				t.Errorf("ProvName: got %s, want %s", store.ProvName, tt.expectedProvName)
+			}
+
+			if store.keyStorageFlags != tt.expectedStorageFlags {
+				t.Errorf("keyStorageFlags: got %d, want %d", store.keyStorageFlags, tt.expectedStorageFlags)
+			}
+		})
+	}
+}
+
+func TestWinCertStoreOptions_KeyAccessFlags(t *testing.T) {
+	tests := []struct {
+		name                   string
+		currentUser            bool
+		expectedKeyAccessFlags uintptr
+	}{
+		{
+			name:                   "current_user",
+			currentUser:            true,
+			expectedKeyAccessFlags: 0, // No machine key flag
+		},
+		{
+			name:                   "machine_store",
+			currentUser:            false,
+			expectedKeyAccessFlags: nCryptMachineKey,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			opts := WinCertStoreOptions{
+				Provider:            ProviderMSSoftware,
+				Container:           "TestContainer",
+				Issuers:             []string{"CN=Test CA"},
+				IntermediateIssuers: []string{"CN=Intermediate CA"},
+				LegacyKey:           false,
+				CurrentUser:         tt.currentUser,
+				StoreFlags:          0,
+			}
+
+			store, err := OpenWinCertStoreWithOptions(opts)
+			if err != nil {
+				t.Fatalf("Failed to open store: %v", err)
+			}
+			defer store.Close()
+
+			if store.keyAccessFlags != tt.expectedKeyAccessFlags {
+				t.Errorf("keyAccessFlags: got %d, want %d", store.keyAccessFlags, tt.expectedKeyAccessFlags)
+			}
+		})
+	}
+}
+
+func BenchmarkOpenWinCertStoreWithOptions(b *testing.B) {
+	opts := WinCertStoreOptions{
+		Provider:            ProviderMSSoftware,
+		Container:           "BenchmarkContainer",
+		Issuers:             []string{"CN=Benchmark CA"},
+		IntermediateIssuers: []string{"CN=Benchmark Intermediate CA"},
+		LegacyKey:           false,
+		CurrentUser:         true,
+		StoreFlags:          0,
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		store, err := OpenWinCertStoreWithOptions(opts)
+		if err != nil {
+			b.Fatalf("Failed to open store: %v", err)
+		}
+		store.Close()
 	}
 }
