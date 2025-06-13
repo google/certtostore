@@ -49,6 +49,17 @@ const (
 	RSA Algorithm = "RSA"
 )
 
+func (a Algorithm) Tox509() x509.PublicKeyAlgorithm {
+	switch a {
+	case EC:
+		return x509.ECDSA
+	case RSA:
+		return x509.RSA
+	default:
+		return 0
+	}
+}
+
 // GenerateOpts holds parameters used to generate a private key.
 type GenerateOpts struct {
 	// Algorithm to be used, either RSA or EC.
