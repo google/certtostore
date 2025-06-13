@@ -167,10 +167,10 @@ var (
 	nCryptProviderHandleProperty = wide("Provider Handle") // NCRYPT_PROV_HANDLE
 
 	// Flags for NCRYPT_IMPL_TYPE_PROPERTY
-	nCryptImplHardwareFlag    = 0x00000001 // NCRYPT_IMPL_HARDWARE_FLAG
-	nCryptImplSoftwareFlag    = 0x00000002 // NCRYPT_IMPL_SOFTWARE_FLAG
-	nCryptImplRemovableFlag   = 0x00000008 // NCRYPT_IMPL_REMOVABLE_FLAG
-	nCryptImplHardwareRngFlag = 0x00000010 // NCRYPT_IMPL_HARDWARE_RNG_FLAG
+	nCryptImplHardwareFlag    uint32 = 0x00000001 // NCRYPT_IMPL_HARDWARE_FLAG
+	nCryptImplSoftwareFlag    uint32 = 0x00000002 // NCRYPT_IMPL_SOFTWARE_FLAG
+	nCryptImplRemovableFlag   uint32 = 0x00000008 // NCRYPT_IMPL_REMOVABLE_FLAG
+	nCryptImplHardwareRngFlag uint32 = 0x00000010 // NCRYPT_IMPL_HARDWARE_RNG_FLAG
 
 	// curveIDs maps bcrypt key blob magic numbers to elliptic curves.
 	curveIDs = map[uint32]elliptic.Curve{
@@ -1347,7 +1347,7 @@ func keyMetadata(kh uintptr, store *WinCertStore) (*Key, error) {
 	defer freeObject(ph)
 
 	// get the provider implementation from the provider handle
-	impl, err := getPropertyInt(ph, nCryptImplTypeProperty)
+	impl, err := getPropertyUint32(ph, nCryptImplTypeProperty)
 	if err != nil {
 		return nil, fmt.Errorf("unable to determine provider implementation: %v", err)
 	}
@@ -1359,7 +1359,7 @@ func keyMetadata(kh uintptr, store *WinCertStore) (*Key, error) {
 	// of the provider OpenWinCertStore was given. This means we cannot rely on
 	// store.Prov to tell us which provider a given key resides in. Instead, we
 	// lookup the provider directly from the key properties.
-	if impl == nCryptImplSoftwareFlag {
+	if (impl & nCryptImplSoftwareFlag) != 0 {
 		uc, lc, err = softwareKeyContainers(uc, store.storeDomain())
 		if err != nil {
 			return nil, err
@@ -1436,7 +1436,7 @@ func getPropertyHandle(kh uintptr, property *uint16) (uintptr, error) {
 	return **(**uintptr)(unsafe.Pointer(&buf)), nil
 }
 
-func getPropertyInt(kh uintptr, property *uint16) (int, error) {
+func getPropertyUint32(kh uintptr, property *uint16) (uint32, error) {
 	buf, err := fnGetProperty(kh, property)
 	if err != nil {
 		return 0, err
@@ -1444,7 +1444,7 @@ func getPropertyInt(kh uintptr, property *uint16) (int, error) {
 	if len(buf) < 1 {
 		return 0, fmt.Errorf("empty result")
 	}
-	return **(**int)(unsafe.Pointer(&buf)), nil
+	return **(**uint32)(unsafe.Pointer(&buf)), nil
 }
 
 func getPropertyStr(kh uintptr, property *uint16) (string, error) {
