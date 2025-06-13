@@ -42,10 +42,10 @@ import (
 	"unsafe"
 
 	"github.com/google/deck"
-	"golang.org/x/crypto/cryptobyte/asn1"
-	"golang.org/x/crypto/cryptobyte"
-	"golang.org/x/sys/windows"
 	"github.com/hashicorp/go-multierror"
+	"golang.org/x/crypto/cryptobyte"
+	"golang.org/x/crypto/cryptobyte/asn1"
+	"golang.org/x/sys/windows"
 )
 
 // WinCertStorage provides windows-specific additions to the CertStorage interface.
@@ -102,17 +102,19 @@ const (
 	compareShift            = 16                                              // CERT_COMPARE_SHIFT
 	findIssuerStr           = compareNameStrW<<compareShift | infoIssuerFlag  // CERT_FIND_ISSUER_STR_W
 	signatureKeyUsage       = 0x80                                            // CERT_DIGITAL_SIGNATURE_KEY_USAGE
-	ncryptKeySpec           = 0xFFFFFFFF                                      // CERT_NCRYPT_KEY_SPEC
 
 	// Legacy CryptoAPI flags
 	bCryptPadPKCS1 uintptr = 0x2
 	bCryptPadPSS   uintptr = 0x8
 
 	// Magic numbers for public key blobs.
-	rsa1Magic = 0x31415352 // "RSA1" BCRYPT_RSAPUBLIC_MAGIC
-	ecs1Magic = 0x31534345 // "ECS1" BCRYPT_ECDSA_PUBLIC_P256_MAGIC
-	ecs3Magic = 0x33534345 // "ECS3" BCRYPT_ECDSA_PUBLIC_P384_MAGIC
-	ecs5Magic = 0x35534345 // "ECS5" BCRYPT_ECDSA_PUBLIC_P521_MAGIC
+	rsa1Magic      = 0x31415352 // "RSA1" BCRYPT_RSAPUBLIC_MAGIC
+	ecdsaP256Magic = 0x31534345 // BCRYPT_ECDSA_PUBLIC_P256_MAGIC
+	ecdsaP384Magic = 0x33534345 // BCRYPT_ECDSA_PUBLIC_P384_MAGIC
+	ecdsaP521Magic = 0x35534345 // BCRYPT_ECDSA_PUBLIC_P521_MAGIC
+	ecdhP256Magic  = 0x314B4345 // BCRYPT_ECDH_PUBLIC_P256_MAGIC
+	ecdhP384Magic  = 0x334B4345 // BCRYPT_ECDH_PUBLIC_P384_MAGIC
+	ecdhP521Magic  = 0x354B4345 // BCRYPT_ECDH_PUBLIC_P521_MAGIC
 
 	// ncrypt.h constants
 	ncryptPersistFlag           = 0x80000000 // NCRYPT_PERSIST_FLAG
@@ -142,8 +144,16 @@ const (
 	certChainCacheOnlyURLRetrieval    = 0x00000004           // CERT_CHAIN_CACHE_ONLY_URL_RETRIEVAL
 	certChainDisableAIA               = 0x00002000           // CERT_CHAIN_DISABLE_AIA
 	certChainRevocationCheckCacheOnly = 0x80000000           // CERT_CHAIN_REVOCATION_CHECK_CACHE_ONLY
+
+	// CertStoreReadOnly represents read only permissions
+	CertStoreReadOnly = 0x00008000 // CERT_STORE_READONLY_FLAG
+	// CertStoreSaveToFile represents write to file permissions
+	CertStoreSaveToFile = 0x00001000 // CERT_STORE_SAVE_TO_FILE
+	// CertStoreOpenMaximumAllowed represents all permissions
+	CertStoreOpenMaximumAllowed = 0x00001000 // CERT_STORE_MAXIMUM_ALLOWED_FLAG
 )
 
+const ncryptKeySpec uint32 = 0xFFFFFFFF // CERT_NCRYPT_KEY_SPEC
 var (
 	// Key blob type constants.
 	bCryptRSAPublicBlob = wide("RSAPUBLICBLOB")
@@ -157,16 +167,19 @@ var (
 	nCryptProviderHandleProperty = wide("Provider Handle") // NCRYPT_PROV_HANDLE
 
 	// Flags for NCRYPT_IMPL_TYPE_PROPERTY
-	nCryptImplHardwareFlag    = 0x00000001 // NCRYPT_IMPL_HARDWARE_FLAG
-	nCryptImplSoftwareFlag    = 0x00000002 // NCRYPT_IMPL_SOFTWARE_FLAG
-	nCryptImplRemovableFlag   = 0x00000008 // NCRYPT_IMPL_REMOVABLE_FLAG
-	nCryptImplHardwareRngFlag = 0x00000010 // NCRYPT_IMPL_HARDWARE_RNG_FLAG
+	nCryptImplHardwareFlag    uint32 = 0x00000001 // NCRYPT_IMPL_HARDWARE_FLAG
+	nCryptImplSoftwareFlag    uint32 = 0x00000002 // NCRYPT_IMPL_SOFTWARE_FLAG
+	nCryptImplRemovableFlag   uint32 = 0x00000008 // NCRYPT_IMPL_REMOVABLE_FLAG
+	nCryptImplHardwareRngFlag uint32 = 0x00000010 // NCRYPT_IMPL_HARDWARE_RNG_FLAG
 
 	// curveIDs maps bcrypt key blob magic numbers to elliptic curves.
 	curveIDs = map[uint32]elliptic.Curve{
-		ecs1Magic: elliptic.P256(), // BCRYPT_ECDSA_PUBLIC_P256_MAGIC
-		ecs3Magic: elliptic.P384(), // BCRYPT_ECDSA_PUBLIC_P384_MAGIC
-		ecs5Magic: elliptic.P521(), // BCRYPT_ECDSA_PUBLIC_P521_MAGIC
+		ecdsaP256Magic: elliptic.P256(), // BCRYPT_ECDSA_PUBLIC_P256_MAGIC
+		ecdsaP384Magic: elliptic.P384(), // BCRYPT_ECDSA_PUBLIC_P384_MAGIC
+		ecdsaP521Magic: elliptic.P521(), // BCRYPT_ECDSA_PUBLIC_P521_MAGIC
+		ecdhP256Magic:  elliptic.P256(), // BCRYPT_ECDH_PUBLIC_P256_MAGIC
+		ecdhP384Magic:  elliptic.P384(), // BCRYPT_ECDH_PUBLIC_P384_MAGIC
+		ecdhP521Magic:  elliptic.P521(), // BCRYPT_ECDH_PUBLIC_P521_MAGIC
 	}
 
 	// curveNames maps bcrypt curve names to elliptic curves. We use it
@@ -283,6 +296,49 @@ func intendedKeyUsage(enc uint32, cert *windows.CertContext) (usage uint16) {
 	return
 }
 
+// WinCertStoreOptions contains configuration options for opening a certificate store.
+// This struct provides comprehensive control over how a Windows certificate store
+// is opened and configured, including cryptographic providers, key storage options,
+// and store access flags.
+type WinCertStoreOptions struct {
+	// Provider specifies the cryptographic provider to use for key operations.
+	// Common values include:
+	//   - ProviderMSPlatform: "Microsoft Platform Crypto Provider"
+	//   - ProviderMSSoftware: "Microsoft Software Key Storage Provider"
+	//   - ProviderMSLegacy: "Microsoft Enhanced Cryptographic Provider v1.0"
+	Provider string
+
+	// Container specifies the key container name within the cryptographic provider.
+	// This name uniquely identifies the key pair within the provider.
+	Container string
+
+	// Issuers contains the list of certificate issuer distinguished names to search for.
+	// The certificate lookup will match against these issuer names.
+	Issuers []string
+
+	// IntermediateIssuers contains the list of intermediate certificate issuer distinguished names.
+	// These are used for certificate chain validation and storage.
+	IntermediateIssuers []string
+
+	// LegacyKey indicates whether to use a legacy key format compatible with CryptoAPI.
+	// When true, keys will be stored in a format accessible to older Windows applications.
+	LegacyKey bool
+
+	// CurrentUser indicates whether to use the current user's certificate store instead
+	// of the local machine store. When false, the local machine store is used, which
+	// requires administrator privileges but makes certificates available to all users.
+	CurrentUser bool
+
+	// StoreFlags contains additional flags for certificate store operations.
+	// These flags control how the certificate store is opened and accessed.
+	// Common flags include:
+	//   - certStoreReadOnly: Open store in read-only mode
+	//   - certStoreSaveToFile: Enable saving store to file
+	//   - certStoreCreateNewFlag: Create new store if it doesn't exist
+	//   - certStoreOpenExistingFlag: Only open existing stores
+	StoreFlags uint32
+}
+
 // WinCertStore is a CertStorage implementation for the Windows Certificate Store.
 type WinCertStore struct {
 	Prov                uintptr
@@ -294,44 +350,112 @@ type WinCertStore struct {
 	certChains          [][]*x509.Certificate
 	stores              map[string]*storeHandle
 	keyAccessFlags      uintptr
+	storeFlags          uint32
 
 	mu sync.Mutex
+}
+
+// DefaultWinCertStoreOptions returns the default options for opening a certificate store.
+// These options represent a safe, commonly-used configuration suitable for most applications.
+//
+// Parameters:
+//   - provider: The cryptographic provider name (e.g., ProviderMSSoftware)
+//   - container: The key container name
+//   - issuers: List of certificate issuer distinguished names
+//   - intermediateIssuers: List of intermediate certificate issuer distinguished names
+//   - legacyKey: Whether to use legacy CryptoAPI-compatible key format
+//
+// Returns a WinCertStoreOptions struct with safe defaults:
+//   - CurrentUser: false (uses machine store)
+//   - StoreFlags: 0 (no special flags)
+func DefaultWinCertStoreOptions(provider, container string, issuers, intermediateIssuers []string, legacyKey bool) WinCertStoreOptions {
+	return WinCertStoreOptions{
+		Provider:            provider,
+		Container:           container,
+		Issuers:             issuers,
+		IntermediateIssuers: intermediateIssuers,
+		LegacyKey:           legacyKey,
+		CurrentUser:         false,
+		StoreFlags:          0,
+	}
 }
 
 // OpenWinCertStore creates a WinCertStore with keys accessible by all users on a machine.
 // Call Close() when finished using the store.
 func OpenWinCertStore(provider, container string, issuers, intermediateIssuers []string, legacyKey bool) (*WinCertStore, error) {
-	return openWinCertStore(provider, container, issuers, intermediateIssuers, legacyKey, false)
+	opts := DefaultWinCertStoreOptions(provider, container, issuers, intermediateIssuers, legacyKey)
+	return OpenWinCertStoreWithOptions(opts)
 }
 
 // OpenWinCertStoreCurrentUser creates a WinCertStore with keys accessible by current user.
 // Call Close() when finished using the store.
 func OpenWinCertStoreCurrentUser(provider, container string, issuers, intermediateIssuers []string, legacyKey bool) (*WinCertStore, error) {
-	return openWinCertStore(provider, container, issuers, intermediateIssuers, legacyKey, true)
+	opts := DefaultWinCertStoreOptions(provider, container, issuers, intermediateIssuers, legacyKey)
+	opts.CurrentUser = true
+	return OpenWinCertStoreWithOptions(opts)
 }
 
-func openWinCertStore(provider, container string, issuers, intermediateIssuers []string, legacyKey, currentUser bool) (*WinCertStore, error) {
+// OpenWinCertStoreWithOptions creates a WinCertStore with the provided options.
+// This function provides maximum flexibility for configuring the certificate store,
+// including advanced options like custom store flags and provider selection.
+//
+// The function validates all options before attempting to open the store, returning
+// detailed error information if any configuration is invalid or incompatible.
+//
+// Parameters:
+//   - opts: Comprehensive configuration options for the certificate store
+//
+// Returns:
+//   - *WinCertStore: A configured certificate store ready for use
+//   - error: Detailed error information if store creation fails
+//
+// Example usage:
+//
+//	opts := WinCertStoreOptions{
+//	    Provider: ProviderMSSoftware,
+//	    Container: "MY",
+//	    Issuers: []string{"CN=My CA"},
+//	    StoreFlags: certStoreReadOnly,
+//	    CurrentUser: true,
+//	}
+//	store, err := OpenWinCertStoreWithOptions(opts)
+//	if err != nil {
+//	    return fmt.Errorf("failed to open certificate store: %v", err)
+//	}
+//	defer store.Close()
+//
+// Common errors:
+//   - Provider not available or accessible
+//   - Invalid or incompatible store flags
+//   - Missing required options (provider, container, issuers)
+//   - Insufficient privileges for machine store access
+func OpenWinCertStoreWithOptions(opts WinCertStoreOptions) (*WinCertStore, error) {
 	// Open a handle to the crypto provider we will use for private key operations
-	cngProv, err := openProvider(provider)
+	cngProv, err := openProvider(opts.Provider)
 	if err != nil {
-		return nil, fmt.Errorf("unable to open crypto provider or provider not available: %v", err)
+		return nil, fmt.Errorf("unable to open crypto provider %q: %v", opts.Provider, err)
 	}
 
 	wcs := &WinCertStore{
 		Prov:                cngProv,
-		ProvName:            provider,
-		issuers:             issuers,
-		intermediateIssuers: intermediateIssuers,
-		container:           container,
+		ProvName:            opts.Provider,
+		issuers:             make([]string, len(opts.Issuers)),
+		intermediateIssuers: make([]string, len(opts.IntermediateIssuers)),
+		container:           opts.Container,
 		stores:              make(map[string]*storeHandle),
+		storeFlags:          opts.StoreFlags,
 	}
 
-	if legacyKey {
+	// Deep copy the issuer slices to prevent external modification
+	copy(wcs.issuers, opts.Issuers)
+	copy(wcs.intermediateIssuers, opts.IntermediateIssuers)
+
+	if opts.LegacyKey {
 		wcs.keyStorageFlags = ncryptWriteKeyToLegacyStore
 		wcs.ProvName = ProviderMSLegacy
 	}
 
-	if !currentUser {
+	if !opts.CurrentUser {
 		wcs.keyAccessFlags = nCryptMachineKey
 	}
 
@@ -519,6 +643,9 @@ func (w *WinCertStore) Close() error {
 
 // Link will associate the certificate installed in the system store to the user store.
 func (w *WinCertStore) Link() error {
+	if w.isReadOnly() {
+		return fmt.Errorf("cannot link certificates in a read-only store")
+	}
 	cert, _, err := w.cert(w.issuers, my, certStoreLocalMachine)
 	if err != nil {
 		return fmt.Errorf("checking for existing machine certificates returned: %v", err)
@@ -586,7 +713,7 @@ type storeHandle struct {
 	handle *windows.Handle
 }
 
-func newStoreHandle(provider uint32, store *uint16) (*storeHandle, error) {
+func newStoreHandle(provider uint32, store *uint16, flags uint32) (*storeHandle, error) {
 	var s storeHandle
 	if s.handle != nil {
 		return &s, nil
@@ -595,7 +722,7 @@ func newStoreHandle(provider uint32, store *uint16) (*storeHandle, error) {
 		certStoreProvSystem,
 		0,
 		0,
-		provider,
+		provider|flags,
 		uintptr(unsafe.Pointer(store)))
 	if err != nil {
 		return nil, fmt.Errorf("CertOpenStore for the user store returned: %v", err)
@@ -659,6 +786,9 @@ func (w *WinCertStore) linkLegacy() error {
 // Remove removes certificates issued by any of w.issuers from the user and/or system cert stores.
 // If it is unable to remove any certificates, it returns an error.
 func (w *WinCertStore) Remove(removeSystem bool) error {
+	if w.isReadOnly() {
+		return fmt.Errorf("cannot remove certificates from a read-only store")
+	}
 	for _, issuer := range w.issuers {
 		if err := w.remove(issuer, removeSystem); err != nil {
 			return err
@@ -781,7 +911,7 @@ func (k Key) Public() crypto.PublicKey {
 // Sign returns the signature of a hash to implement crypto.Signer
 func (k Key) Sign(_ io.Reader, digest []byte, opts crypto.SignerOpts) ([]byte, error) {
 	switch k.AlgorithmGroup {
-	case "ECDSA":
+	case "ECDSA", "ECDH":
 		return signECDSA(k.handle, digest)
 	case "RSA":
 		return signRSA(k.handle, digest, opts)
@@ -1088,6 +1218,9 @@ func (w *WinCertStore) CertKey(cert *windows.CertContext) (*Key, error) {
 // software backed key, depending on support from the host OS
 // key size is set to the maximum supported by Microsoft Software Key Storage Provider
 func (w *WinCertStore) Generate(opts GenerateOpts) (crypto.Signer, error) {
+	if w.isReadOnly() {
+		return nil, fmt.Errorf("cannot generate keys in a read-only store")
+	}
 	deck.Infof("Provider: %s", w.ProvName)
 	switch opts.Algorithm {
 	case EC:
@@ -1214,7 +1347,7 @@ func keyMetadata(kh uintptr, store *WinCertStore) (*Key, error) {
 	defer freeObject(ph)
 
 	// get the provider implementation from the provider handle
-	impl, err := getPropertyInt(ph, nCryptImplTypeProperty)
+	impl, err := getPropertyUint32(ph, nCryptImplTypeProperty)
 	if err != nil {
 		return nil, fmt.Errorf("unable to determine provider implementation: %v", err)
 	}
@@ -1226,7 +1359,7 @@ func keyMetadata(kh uintptr, store *WinCertStore) (*Key, error) {
 	// of the provider OpenWinCertStore was given. This means we cannot rely on
 	// store.Prov to tell us which provider a given key resides in. Instead, we
 	// lookup the provider directly from the key properties.
-	if impl == nCryptImplSoftwareFlag {
+	if (impl & nCryptImplSoftwareFlag) != 0 {
 		uc, lc, err = softwareKeyContainers(uc, store.storeDomain())
 		if err != nil {
 			return nil, err
@@ -1239,7 +1372,7 @@ func keyMetadata(kh uintptr, store *WinCertStore) (*Key, error) {
 	}
 	var pub crypto.PublicKey
 	switch alg {
-	case "ECDSA":
+	case "ECDSA", "ECDH":
 		buf, err := export(kh, bCryptECCPublicBlob)
 		if err != nil {
 			return nil, fmt.Errorf("failed to export ECC public key: %v", err)
@@ -1303,7 +1436,7 @@ func getPropertyHandle(kh uintptr, property *uint16) (uintptr, error) {
 	return **(**uintptr)(unsafe.Pointer(&buf)), nil
 }
 
-func getPropertyInt(kh uintptr, property *uint16) (int, error) {
+func getPropertyUint32(kh uintptr, property *uint16) (uint32, error) {
 	buf, err := fnGetProperty(kh, property)
 	if err != nil {
 		return 0, err
@@ -1311,7 +1444,7 @@ func getPropertyInt(kh uintptr, property *uint16) (int, error) {
 	if len(buf) < 1 {
 		return 0, fmt.Errorf("empty result")
 	}
-	return **(**int)(unsafe.Pointer(&buf)), nil
+	return **(**uint32)(unsafe.Pointer(&buf)), nil
 }
 
 func getPropertyStr(kh uintptr, property *uint16) (string, error) {
@@ -1453,6 +1586,9 @@ func curveName(kh uintptr) (elliptic.Curve, error) {
 
 // Store imports certificates into the Windows certificate store
 func (w *WinCertStore) Store(cert *x509.Certificate, intermediate *x509.Certificate) error {
+	if w.isReadOnly() {
+		return fmt.Errorf("cannot store certificates in a read-only store")
+	}
 	return w.StoreWithDisposition(cert, intermediate, windows.CERT_STORE_ADD_ALWAYS)
 }
 
@@ -1461,6 +1597,9 @@ func (w *WinCertStore) Store(cert *x509.Certificate, intermediate *x509.Certific
 // or a link to a matching certificate already exists in the store
 // https://learn.microsoft.com/en-us/windows/win32/api/wincrypt/nf-wincrypt-certaddcertificatecontexttostore
 func (w *WinCertStore) StoreWithDisposition(cert *x509.Certificate, intermediate *x509.Certificate, disposition uint32) error {
+	if w.isReadOnly() {
+		return fmt.Errorf("cannot store certificates in a read-only store")
+	}
 	certContext, err := windows.CertCreateCertificateContext(
 		encodingX509ASN|encodingPKCS7,
 		&cert.Raw[0],
@@ -1523,7 +1662,7 @@ func (w *WinCertStore) storeHandle(provider uint32, store *uint16) (windows.Hand
 	key := fmt.Sprintf("%d%s", provider, windows.UTF16PtrToString(store))
 	var err error
 	if w.stores[key] == nil {
-		w.stores[key], err = newStoreHandle(provider, store)
+		w.stores[key], err = newStoreHandle(provider, store, w.storeFlags)
 		if err != nil {
 			return 0, err
 		}
@@ -1638,3 +1777,7 @@ func keyMatch(keyPath, dir string) (string, error) {
 // Verify interface conformance.
 var _ CertStorage = &WinCertStore{}
 var _ Credential = &Key{}
+
+func (w *WinCertStore) isReadOnly() bool {
+	return (w.storeFlags & CertStoreReadOnly) != 0
+}
