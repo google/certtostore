@@ -130,7 +130,7 @@ const (
 	nCryptOverwriteKey = 0x80 // NCRYPT_OVERWRITE_KEY_FLAG
 
 	// winerror.h constants
-	cryptENotFound = 0x80092004 // CRYPT_E_NOT_FOUND
+	cryptENotFound syscall.Errno = 0x80092004 // CRYPT_E_NOT_FOUND
 
 	// ProviderMSPlatform represents the Microsoft Platform Crypto Provider
 	ProviderMSPlatform = "Microsoft Platform Crypto Provider"
@@ -1806,7 +1806,7 @@ func (w *WinCertStore) CertByCommonName(commonName string) (*x509.Certificate,
 			certContext,
 		)
 		if err != nil {
-			return nil, nil, nil, fmt.Errorf("error finding certificate by common name %q: %v",
+			return nil, nil, nil, fmt.Errorf("could not find certificate by common name %q: %w",
 				commonName, err)
 		}
 		if certContext == nil {
@@ -1824,5 +1824,5 @@ func (w *WinCertStore) CertByCommonName(commonName string) (*x509.Certificate,
 		// Found a valid certificate, return it.
 		return cert, certContext, w.certChains, nil
 	}
-	return nil, nil, nil, fmt.Errorf("no certificate found with common name %q", commonName)
+	return nil, nil, nil, cryptENotFound
 }

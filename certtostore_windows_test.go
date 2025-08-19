@@ -561,48 +561,6 @@ func BenchmarkOpenWinCertStoreWithOptions(b *testing.B) {
 	}
 }
 
-func TestCertByCommonName_NotFound(t *testing.T) {
-	// Open a valid store to exercise CertByCommonName.
-	opts := WinCertStoreOptions{
-		Provider:            ProviderMSSoftware,
-		Container:           "TestContainerForCNLookup",
-		Issuers:             []string{"CN=Test CA"},
-		IntermediateIssuers: []string{"CN=Intermediate CA"},
-		LegacyKey:           false,
-		CurrentUser:         true,
-		StoreFlags:          0,
-	}
-	store, err := OpenWinCertStoreWithOptions(opts)
-	if err != nil {
-		t.Fatalf("failed to open store: %v", err)
-	}
-	defer store.Close()
-
-	// Use a CN that should not exist to trigger the "not found" path.
-	const nonexistentCN = "CN=__certtostore_test_common_name_that_should_not_exist__"
-
-	cert, ctx, chains, err := store.CertByCommonName(nonexistentCN)
-	if err == nil {
-		if ctx != nil {
-			FreeCertContext(ctx)
-		}
-		t.Fatalf("expected error for unknown common name, got none")
-	}
-	if !strings.Contains(err.Error(), "no certificate found") {
-		t.Errorf("unexpected error: %v", err)
-	}
-	if cert != nil {
-		t.Errorf("expected nil certificate, got %#v", cert)
-	}
-	if ctx != nil {
-		FreeCertContext(ctx)
-		t.Errorf("expected nil cert context, got non-nil")
-	}
-	if chains != nil {
-		t.Errorf("expected nil chains, got %#v", chains)
-	}
-}
-
 func TestCertByCommonName(t *testing.T) {
 	// Open a valid, writable current-user store.
 	opts := WinCertStoreOptions{
@@ -683,7 +641,13 @@ func TestCertByCommonName(t *testing.T) {
 		t.Fatalf("CertAddCertificateContextToStore: %v", err)
 	}
 
-	// Query by CN.
+	// Query by CN which is not expected in cert store
+	_, _, _, err = store.CertByCommonName("nonexistent")
+	if !errors.Is(err, cryptENotFound) {
+		t.Fatalf("expected cryptENotFound error, got %v", err)
+	}
+
+	// Query by legitimate CN.
 	found, foundCtx, chains, err := store.CertByCommonName(cn)
 	if err != nil {
 		t.Fatalf("CertByCommonName returned error: %v", err)
