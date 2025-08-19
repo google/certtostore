@@ -130,7 +130,7 @@ const (
 	nCryptOverwriteKey = 0x80 // NCRYPT_OVERWRITE_KEY_FLAG
 
 	// winerror.h constants
-	cryptENotFound = 0x80092004 // CRYPT_E_NOT_FOUND
+	cryptENotFound syscall.Errno = 0x80092004 // CRYPT_E_NOT_FOUND
 
 	// ProviderMSPlatform represents the Microsoft Platform Crypto Provider
 	ProviderMSPlatform = "Microsoft Platform Crypto Provider"
@@ -537,6 +537,8 @@ func (w *WinCertStore) resolveChains(cert *windows.CertContext) error {
 		}
 		certChains = append(certChains, x509Certs)
 	}
+	w.certChains = certChains
+
 	return nil
 }
 
@@ -638,6 +640,7 @@ func (w *WinCertStore) Close() error {
 	if err := freeObject(w.Prov); err != nil {
 		multierror.Append(result, err)
 	}
+	w.certChains = nil
 	return result
 }
 
@@ -1780,4 +1783,46 @@ var _ Credential = &Key{}
 
 func (w *WinCertStore) isReadOnly() bool {
 	return (w.storeFlags & CertStoreReadOnly) != 0
+}
+
+// CertByCommonName searches for a certificate by its common name in the store.
+// The returned *windows.CertContext must be freed by the caller using
+// FreeCertContext to avoid resource leaks.
+func (w *WinCertStore) CertByCommonName(commonName string) (*x509.Certificate,
+	*windows.CertContext, [][]*x509.Certificate, error) {
+	storeHandle, err := w.storeHandle(w.storeDomain(), my)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("failed to open certificate store: %v", err)
+	}
+	var certContext *windows.CertContext
+	var cert *x509.Certificate
+	for {
+		certContext, err = findCert(
+			storeHandle,
+			encodingX509ASN|encodingPKCS7,
+			0,
+			windows.CERT_FIND_SUBJECT_STR,
+			wide(commonName),
+			certContext,
+		)
+		if err != nil {
+			return nil, nil, nil, fmt.Errorf("could not find certificate by common name %q: %w",
+				commonName, err)
+		}
+		if certContext == nil {
+			break // No more certificates found
+		}
+		cert, err = certContextToX509(certContext)
+		if err != nil {
+			FreeCertContext(certContext) // Free context to avoid memory leak
+			continue                     // Skip invalid certificates
+		}
+		if err := w.resolveChains(certContext); err != nil {
+			FreeCertContext(certContext)
+			return nil, nil, nil, err
+		}
+		// Found a valid certificate, return it.
+		return cert, certContext, w.certChains, nil
+	}
+	return nil, nil, nil, cryptENotFound
 }
