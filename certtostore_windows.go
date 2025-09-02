@@ -42,7 +42,6 @@ import (
 	"unsafe"
 
 	"github.com/google/deck"
-	"github.com/hashicorp/go-multierror"
 	"golang.org/x/crypto/cryptobyte"
 	"golang.org/x/crypto/cryptobyte/asn1"
 	"golang.org/x/sys/windows"
@@ -633,12 +632,12 @@ func (w *WinCertStore) Close() error {
 	for _, v := range w.stores {
 		if v != nil {
 			if err := v.Close(); err != nil {
-				multierror.Append(result, err)
+				errors.Join(result, err)
 			}
 		}
 	}
 	if err := freeObject(w.Prov); err != nil {
-		multierror.Append(result, err)
+		errors.Join(result, err)
 	}
 	w.certChains = nil
 	return result
