@@ -1825,3 +1825,45 @@ func (w *WinCertStore) CertByCommonName(commonName string) (*x509.Certificate,
 	}
 	return nil, nil, nil, cryptENotFound
 }
+
+// ListCertificates retrieves all certificates from the Windows MY certificate store.
+// It enumerates all certificates found within it.
+//
+// Returns an error if the certificate store cannot be opened or if there are issues
+// during the certificate enumeration process.
+func (w *WinCertStore) ListCertificates() ([]*x509.Certificate, error) {
+	storeHandle, err := w.storeHandle(w.storeDomain(), my)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open certificate store: %v", err)
+	}
+
+	certs := []*x509.Certificate{}
+
+	var certContext *windows.CertContext
+	for {
+		var cert *x509.Certificate
+		certContext, err = findCert(
+			storeHandle,
+			encodingX509ASN|encodingPKCS7,
+			0,
+			windows.CERT_FIND_ANY,
+			nil,
+			certContext,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("could not find certificates: %w", err)
+		}
+		if certContext == nil {
+			break // No more certificates found
+		}
+		cert, err = certContextToX509(certContext)
+		if err != nil {
+			// Continue enumeration even if this cert can't be converted
+			continue
+		}
+
+		certs = append(certs, cert)
+	}
+
+	return certs, nil
+}
