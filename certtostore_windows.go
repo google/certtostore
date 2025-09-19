@@ -1745,9 +1745,6 @@ func softwareKeyContainers(uniqueID string, storeDomain uint32) (string, string,
 		if err != nil {
 			return "", "", fmt.Errorf("unable to locate CNG key: %v", err)
 		}
-		if cng == "" {
-			return "", "", errors.New("CNG key was empty")
-		}
 	default:
 		return "", "", fmt.Errorf("unexpected key type %q", keyType)
 	}
