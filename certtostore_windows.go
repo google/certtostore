@@ -513,7 +513,7 @@ func (w *WinCertStore) resolveChains(cert *windows.CertContext) error {
 	// Search the system for candidate certificate chains.
 	chainPara.Size = uint32(unsafe.Sizeof(chainPara))
 	success, _, err := certGetCertificateChain.Call(
-		uintptr(unsafe.Pointer(hcceLocalMachine)),
+		uintptr(hcceLocalMachine),
 		uintptr(unsafe.Pointer(cert)),
 		uintptr(unsafe.Pointer(nil)), // Use current system time as validation time.
 		uintptr(cert.Store),
