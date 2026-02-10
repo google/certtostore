@@ -36,14 +36,13 @@ import (
 	"reflect"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 	"unicode/utf16"
 	"unsafe"
 
 	"github.com/google/deck"
-	"golang.org/x/crypto/cryptobyte"
 	"golang.org/x/crypto/cryptobyte/asn1"
+	"golang.org/x/crypto/cryptobyte"
 	"golang.org/x/sys/windows"
 )
 
@@ -129,7 +128,7 @@ const (
 	nCryptOverwriteKey = 0x80 // NCRYPT_OVERWRITE_KEY_FLAG
 
 	// winerror.h constants
-	cryptENotFound syscall.Errno = 0x80092004 // CRYPT_E_NOT_FOUND
+	cryptENotFound windows.Errno = 0x80092004 // CRYPT_E_NOT_FOUND
 
 	// ProviderMSPlatform represents the Microsoft Platform Crypto Provider
 	ProviderMSPlatform = "Microsoft Platform Crypto Provider"
@@ -275,7 +274,7 @@ func findCert(store windows.Handle, enc, findFlags, findType uint32, para *uint1
 	)
 	if h == 0 {
 		// Actual error, or simply not found?
-		if errno, ok := err.(syscall.Errno); ok && errno == cryptENotFound {
+		if errno, ok := err.(windows.Errno); ok && errno == cryptENotFound {
 			return nil, nil
 		}
 		return nil, err
@@ -632,12 +631,12 @@ func (w *WinCertStore) Close() error {
 	for _, v := range w.stores {
 		if v != nil {
 			if err := v.Close(); err != nil {
-				errors.Join(result, err)
+				result = errors.Join(result, err)
 			}
 		}
 	}
 	if err := freeObject(w.Prov); err != nil {
-		errors.Join(result, err)
+		result = errors.Join(result, err)
 	}
 	w.certChains = nil
 	return result
@@ -711,6 +710,7 @@ func (w *WinCertStore) Link() error {
 	return nil
 }
 
+// storeHandle provides thread-safe access to a Windows certificate store handle.
 type storeHandle struct {
 	handle *windows.Handle
 }
@@ -1220,6 +1220,9 @@ func (w *WinCertStore) CertKey(cert *windows.CertContext) (*Key, error) {
 // software backed key, depending on support from the host OS
 // key size is set to the maximum supported by Microsoft Software Key Storage Provider
 func (w *WinCertStore) Generate(opts GenerateOpts) (crypto.Signer, error) {
+	if err := ValidateGenerateOpts(opts); err != nil {
+		return nil, err
+	}
 	if w.isReadOnly() {
 		return nil, fmt.Errorf("cannot generate keys in a read-only store")
 	}
@@ -1288,7 +1291,7 @@ func (w *WinCertStore) generateRSA(keySize int) (crypto.Signer, error) {
 	}
 
 	var kh uintptr
-	var length = uint32(keySize)
+	length := uint32(keySize)
 	// Pass 0 as the fifth parameter because it is not used (legacy)
 	// https://msdn.microsoft.com/en-us/library/windows/desktop/aa376247(v=vs.85).aspx
 	r, _, err := nCryptCreatePersistedKey.Call(
@@ -1656,7 +1659,8 @@ func (w *WinCertStore) StoreWithDisposition(cert *x509.Certificate, intermediate
 	return nil
 }
 
-// Returns a handle to a given cert store, opening the handle as needed.
+// storeHandle returns a handle to a given cert store, opening the handle as needed.
+// This method is thread-safe and caches handles within the WinCertStore instance.
 func (w *WinCertStore) storeHandle(provider uint32, store *uint16) (windows.Handle, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -1753,6 +1757,9 @@ func softwareKeyContainers(uniqueID string, storeDomain uint32) (string, string,
 
 // keyMatch takes a known path to a private key and searches for a
 // matching key in a provided directory.
+//
+// TODO: Find a more deterministic way to link CNG and CAPI keys than
+// comparing modification times.
 func keyMatch(keyPath, dir string) (string, error) {
 	key, err := os.Stat(keyPath)
 	if err != nil {

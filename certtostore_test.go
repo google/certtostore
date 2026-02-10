@@ -387,3 +387,42 @@ func TestPEMToX509(t *testing.T) {
 		t.Fatalf("unexpected certificate issuer got:%v, want:%v", xCissuer, issuer)
 	}
 }
+
+func TestValidateGenerateOpts(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		opts    GenerateOpts
+		wantErr bool
+	}{
+		{
+			name: "valid-rsa",
+			opts: GenerateOpts{Algorithm: RSA, Size: 2048},
+		},
+		{
+			name: "valid-ec",
+			opts: GenerateOpts{Algorithm: EC, Size: 256},
+		},
+		{
+			name:    "invalid-rsa-size",
+			opts:    GenerateOpts{Algorithm: RSA, Size: 1024},
+			wantErr: true,
+		},
+		{
+			name:    "invalid-ec-size",
+			opts:    GenerateOpts{Algorithm: EC, Size: 128},
+			wantErr: true,
+		},
+		{
+			name:    "unsupported-algorithm",
+			opts:    GenerateOpts{Algorithm: "DSA", Size: 2048},
+			wantErr: true,
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateGenerateOpts(tt.opts)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("ValidateGenerateOpts(%v) error = %v, wantErr %v", tt.opts, err, tt.wantErr)
+			}
+		})
+	}
+}
