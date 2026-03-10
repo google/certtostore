@@ -676,3 +676,165 @@ func TestCertByCommonName(t *testing.T) {
 		t.Errorf("chains[0][0] is not the leaf; got %v, want leaf %v", chains[0][0].Subject, found.Subject)
 	}
 }
+
+func TestListCertificates(t *testing.T) {
+	// Insert test certificates directly into the current-user MY store to avoid private key association.
+	// Local constants for CertOpenStore.
+	const (
+		certStoreProvSystem        = 10 // CERT_STORE_PROV_SYSTEM
+		certSystemStoreCurrentUser = 1 << 16
+		x509ASN                    = 1     // X509_ASN_ENCODING
+		pkcs7ASN                   = 65536 // PKCS_7_ASN_ENCODING
+	)
+	myW, err := windows.UTF16PtrFromString("MY")
+	if err != nil {
+		t.Fatalf("UTF16PtrFromString: %v", err)
+	}
+
+	h, err := windows.CertOpenStore(
+		certStoreProvSystem,
+		0,
+		0,
+		certSystemStoreCurrentUser,
+		uintptr(unsafe.Pointer(myW)),
+	)
+	if err != nil {
+		t.Fatalf("CertOpenStore: %v", err)
+	}
+	defer windows.CertCloseStore(h, 0)
+
+	// Create two self-signed certs with unique CNs.
+	cert1CN := fmt.Sprintf("__certtostore_test1_%d__", time.Now().UnixNano())
+	cert2CN := fmt.Sprintf("__certtostore_test2_%d__", time.Now().UnixNano())
+
+	// Helper function to create a certificate
+	createCert := func(cn string) error {
+		key, err := rsa.GenerateKey(rand.Reader, 2048)
+		if err != nil {
+			return err
+		}
+		template := x509.Certificate{
+			SerialNumber: big.NewInt(time.Now().UnixNano()),
+			Subject: pkix.Name{
+				CommonName: cn,
+			},
+			NotBefore:             time.Now().Add(-1 * time.Minute),
+			NotAfter:              time.Now().Add(5 * time.Minute),
+			KeyUsage:              x509.KeyUsageDigitalSignature,
+			BasicConstraintsValid: true,
+		}
+		der, err := x509.CreateCertificate(rand.Reader, &template, &template, &key.PublicKey, key)
+		if err != nil {
+			return err
+		}
+
+		cert, err := x509.ParseCertificate(der)
+		if err != nil {
+			return err
+		}
+
+		// Add certificate to store
+		ctx, err := windows.CertCreateCertificateContext(
+			x509ASN|pkcs7ASN,
+			&cert.Raw[0],
+			uint32(len(cert.Raw)),
+		)
+		if err != nil {
+			return fmt.Errorf("CertCreateCertificateContext for cert %q: %v", cn, err)
+		}
+		defer windows.CertFreeCertificateContext(ctx)
+
+		if err := windows.CertAddCertificateContextToStore(h, ctx, windows.CERT_STORE_ADD_ALWAYS, nil); err != nil {
+			return fmt.Errorf("CertAddCertificateContextToStore for cert %q: %v", cn, err)
+		}
+
+		return nil
+	}
+
+	// Helper function to remove certificate by common name
+	removeCertByCN := func(cn string) error {
+		cnW, err := windows.UTF16PtrFromString(cn)
+		if err != nil {
+			return err
+		}
+
+		ctx, err := windows.CertFindCertificateInStore(
+			h,
+			x509ASN|pkcs7ASN,
+			0,
+			windows.CERT_FIND_SUBJECT_STR,
+			unsafe.Pointer(cnW),
+			nil,
+		)
+		if err != nil {
+			return err
+		}
+		if ctx == nil {
+			return nil // Certificate not found, nothing to remove
+		}
+
+		// RemoveCertByContext will free the context
+		return RemoveCertByContext(ctx)
+	}
+
+	// Create test certificates
+	if err := createCert(cert1CN); err != nil {
+		t.Fatalf("failed to create cert1: %v", err)
+	}
+	defer func() {
+		if delErr := removeCertByCN(cert1CN); delErr != nil {
+			t.Logf("Failed to remove cert1: %v", delErr)
+		}
+	}()
+
+	if err := createCert(cert2CN); err != nil {
+		t.Fatalf("failed to create cert2: %v", err)
+	}
+	defer func() {
+		if delErr := removeCertByCN(cert2CN); delErr != nil {
+			t.Logf("Failed to remove cert2: %v", delErr)
+		}
+	}()
+
+	// Open the store
+	opts := WinCertStoreOptions{
+		Provider:    ProviderMSSoftware,
+		Container:   "TestContainerForListCertificates",
+		CurrentUser: true,
+	}
+	store, err := OpenWinCertStoreWithOptions(opts)
+	if err != nil {
+		t.Fatalf("failed to open store: %v", err)
+	}
+	defer store.Close()
+
+	// Now test ListCertificates
+	certs, err := store.ListCertificates()
+	if err != nil {
+		t.Fatalf("ListCertificates failed: %v", err)
+	}
+
+	// Test that ListCertificates returns valid x509 certificates
+	var cert1Found, cert2Found bool
+	for i, cert := range certs {
+		if cert == nil {
+			t.Errorf("certificate at index %d is nil", i)
+			continue
+		}
+
+		// Check that we got cert1 and cert2 returned
+		cert1Found = cert1Found || cert.Subject.CommonName == cert1CN
+		cert2Found = cert2Found || cert.Subject.CommonName == cert2CN
+
+		// Log certificate details for debugging
+		t.Logf("Certificate %d: CN=%s, ValidFrom=%s, ValidTo=%s", i, cert.Subject.CommonName, cert.NotBefore, cert.NotAfter)
+	}
+
+	if !cert1Found {
+		t.Errorf("cert1 with CN %s not found in ListCertificates output", cert1CN)
+	}
+
+	if !cert2Found {
+		t.Errorf("cert2 with CN %s not found in ListCertificates output", cert2CN)
+	}
+}
