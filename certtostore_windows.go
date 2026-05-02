@@ -335,6 +335,9 @@ type WinCertStoreOptions struct {
 	//   - certStoreCreateNewFlag: Create new store if it doesn't exist
 	//   - certStoreOpenExistingFlag: Only open existing stores
 	StoreFlags uint32
+
+	// IgnoreNoCNG can be set in order to ignore a not found CNG key when a CAPI key exists.
+	IgnoreNoCNG bool
 }
 
 // WinCertStore is a CertStorage implementation for the Windows Certificate Store.
@@ -349,6 +352,7 @@ type WinCertStore struct {
 	stores              map[string]*storeHandle
 	keyAccessFlags      uintptr
 	storeFlags          uint32
+	ignoreNoCNG         bool
 
 	mu sync.Mutex
 }
@@ -375,6 +379,7 @@ func DefaultWinCertStoreOptions(provider, container string, issuers, intermediat
 		LegacyKey:           legacyKey,
 		CurrentUser:         false,
 		StoreFlags:          0,
+		IgnoreNoCNG:         false,
 	}
 }
 
@@ -442,6 +447,7 @@ func OpenWinCertStoreWithOptions(opts WinCertStoreOptions) (*WinCertStore, error
 		container:           opts.Container,
 		stores:              make(map[string]*storeHandle),
 		storeFlags:          opts.StoreFlags,
+		ignoreNoCNG:         opts.IgnoreNoCNG,
 	}
 
 	// Deep copy the issuer slices to prevent external modification
@@ -1369,6 +1375,11 @@ func keyMetadata(kh uintptr, store *WinCertStore) (*Key, error) {
 		if err != nil {
 			return nil, err
 		}
+
+		if !store.ignoreNoCNG && uc == "" {
+			// key is not CNG backed, but store was opened with ignoreNoCNG=false
+			return nil, errors.New("CNG key was empty")
+		}
 	}
 
 	alg, err := getPropertyStr(kh, nCryptAlgorithmGroupProperty)
@@ -1744,9 +1755,6 @@ func softwareKeyContainers(uniqueID string, storeDomain uint32) (string, string,
 		cng, err = keyMatch(capi, cngRoot)
 		if err != nil {
 			return "", "", fmt.Errorf("unable to locate CNG key: %v", err)
-		}
-		if cng == "" {
-			return "", "", errors.New("CNG key was empty")
 		}
 	default:
 		return "", "", fmt.Errorf("unexpected key type %q", keyType)
