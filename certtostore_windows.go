@@ -104,6 +104,7 @@ const (
 	findIssuerStr           = compareNameStrW<<compareShift | infoIssuerFlag  // CERT_FIND_ISSUER_STR_W
 	findSubjectCert         = compareSubjectCert << compareShift              // CERT_FIND_SUBJECT_CERT
 	signatureKeyUsage       = 0x80                                            // CERT_DIGITAL_SIGNATURE_KEY_USAGE
+	maxTolerance            = 5 * time.Minute
 
 	// Legacy CryptoAPI flags
 	bCryptPadPKCS1 uintptr = 0x2
@@ -1166,9 +1167,16 @@ func (k *Key) SetACL(access string, sid string, perm string) error {
 // setACL sets permissions for the private key by wrapping the Microsoft
 // icacls utility. icacls is used for simplicity working with NTFS ACLs.
 func setACL(file, access, sid, perm string) error {
-	deck.Infof("running: %s %s /%s %s:%s", icaclsPath, file, access, sid, perm)
+	fi, err := os.Lstat(file)
+	if err != nil {
+		return fmt.Errorf("setACL unable to stat %s: %w", file, err)
+	}
+	if !fi.Mode().IsRegular() {
+		return fmt.Errorf("setACL target %s is not a regular file", file)
+	}
+	deck.Infof("running: %s %s /L /%s %s:%s", icaclsPath, file, access, sid, perm)
 	// Parameter validation isn't required, icacls handles this on its own.
-	err := exec.Command(icaclsPath, file, "/"+access, sid+":"+perm).Run()
+	err = exec.Command(icaclsPath, file, "/L", "/"+access, sid+":"+perm).Run()
 	// Error 1798 can safely be ignored, because it occurs when trying to set an acl
 	// for a non-existend sid, which only happens for certain permissions needed on later
 	// versions of Windows.
@@ -1176,9 +1184,9 @@ func setACL(file, access, sid, perm string) error {
 		deck.Infof("ignoring error while %sing '%s' access to %s for sid: %v", access, perm, file, sid)
 		return nil
 	} else if err1 != nil {
-		return fmt.Errorf("certstorage.SetFileACL is unable to %s %s access on %s to sid %s, %v", access, perm, file, sid, err1)
+		return fmt.Errorf("setACL is unable to %s %s access on %s to sid %s, %v", access, perm, file, sid, err1)
 	} else if !ok && err != nil {
-		return fmt.Errorf("certstorage.SetFileACL failed to pull exit error while %s %s access on %s to sid %s, %v", access, perm, file, sid, err)
+		return fmt.Errorf("setACL failed to pull exit error while %s %s access on %s to sid %s, %v", access, perm, file, sid, err)
 	}
 	return nil
 }
@@ -1788,9 +1796,12 @@ func softwareKeyContainers(uniqueID string, storeDomain uint32) (string, string,
 // TODO: Find a more deterministic way to link CNG and CAPI keys than
 // comparing modification times.
 func keyMatch(keyPath, dir string) (string, error) {
-	key, err := os.Stat(keyPath)
+	key, err := os.Lstat(keyPath)
 	if err != nil {
 		return "", fmt.Errorf("unable to determine key creation date: %v", err)
+	}
+	if !key.Mode().IsRegular() {
+		return "", fmt.Errorf("key path %q is not a regular file", keyPath)
 	}
 	files, err := ioutil.ReadDir(dir)
 	if err != nil {
@@ -1801,13 +1812,23 @@ func keyMatch(keyPath, dir string) (string, error) {
 	// necessary to select the right key. Typically, there are several machine
 	// keys present, only one of which was created at the same time as the
 	// known key.
+	var bestMatch string
+	minDiff := time.Duration(1<<63 - 1)
+
 	for _, f := range files {
-		age := int(key.ModTime().Sub(f.ModTime()) / time.Second)
-		if age >= -300 && age < 300 {
-			return dir + f.Name(), nil
+		if !f.Mode().IsRegular() {
+			continue
+		}
+		diff := key.ModTime().Sub(f.ModTime())
+		if diff < 0 {
+			diff = -diff
+		}
+		if diff <= maxTolerance && diff < minDiff {
+			minDiff = diff
+			bestMatch = filepath.Join(dir, f.Name())
 		}
 	}
-	return "", nil
+	return bestMatch, nil
 }
 
 // Verify interface conformance.
