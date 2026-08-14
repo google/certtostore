@@ -21,7 +21,10 @@ import (
 	"crypto/x509/pkix"
 	"errors"
 	"fmt"
+	"io/ioutil"
 	"math/big"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -674,5 +677,182 @@ func TestCertByCommonName(t *testing.T) {
 	}
 	if !found.Equal(chains[0][0]) {
 		t.Errorf("chains[0][0] is not the leaf; got %v, want leaf %v", chains[0][0].Subject, found.Subject)
+	}
+}
+
+func TestKeyMatch_ClosestTimestamp(t *testing.T) {
+	tmpDir := t.TempDir()
+	now := time.Now()
+
+	knownKeyPath := filepath.Join(tmpDir, "known_key")
+	if err := ioutil.WriteFile(knownKeyPath, []byte("known key content"), 0600); err != nil {
+		t.Fatalf("failed to write known key file: %v", err)
+	}
+	if err := os.Chtimes(knownKeyPath, now, now); err != nil {
+		t.Fatalf("failed to set times on known key file: %v", err)
+	}
+
+	searchDir := filepath.Join(tmpDir, "search_dir")
+	if err := os.Mkdir(searchDir, 0755); err != nil {
+		t.Fatalf("failed to create search dir: %v", err)
+	}
+
+	// Candidate with alphabetical priority (starts with 'a'), 2 minutes difference.
+	candA := filepath.Join(searchDir, "a_candidate")
+	if err := ioutil.WriteFile(candA, []byte("cand A"), 0600); err != nil {
+		t.Fatalf("failed to write candA: %v", err)
+	}
+	tA := now.Add(2 * time.Minute)
+	if err := os.Chtimes(candA, tA, tA); err != nil {
+		t.Fatalf("failed to set times on candA: %v", err)
+	}
+
+	// Candidate with closest timestamp (10 seconds difference), starts with 'z'.
+	candZ := filepath.Join(searchDir, "z_candidate")
+	if err := ioutil.WriteFile(candZ, []byte("cand Z"), 0600); err != nil {
+		t.Fatalf("failed to write candZ: %v", err)
+	}
+	tZ := now.Add(10 * time.Second)
+	if err := os.Chtimes(candZ, tZ, tZ); err != nil {
+		t.Fatalf("failed to set times on candZ: %v", err)
+	}
+
+	// Should select candZ because it has the closest timestamp, not candA which is first alphabetically.
+	got, err := keyMatch(knownKeyPath, searchDir)
+	if err != nil {
+		t.Fatalf("keyMatch returned unexpected error: %v", err)
+	}
+	if got != candZ {
+		t.Errorf("keyMatch got %q, want closest candidate %q", got, candZ)
+	}
+}
+
+func TestKeyMatch_IgnoresNonRegularFiles(t *testing.T) {
+	tmpDir := t.TempDir()
+	now := time.Now()
+
+	knownKeyPath := filepath.Join(tmpDir, "known_key")
+	if err := ioutil.WriteFile(knownKeyPath, []byte("known key content"), 0600); err != nil {
+		t.Fatalf("failed to write known key file: %v", err)
+	}
+	if err := os.Chtimes(knownKeyPath, now, now); err != nil {
+		t.Fatalf("failed to set times on known key file: %v", err)
+	}
+
+	searchDir := filepath.Join(tmpDir, "search_dir")
+	if err := os.Mkdir(searchDir, 0755); err != nil {
+		t.Fatalf("failed to create search dir: %v", err)
+	}
+
+	// Subdirectory with exact timestamp match. Must be ignored because it is not a regular file.
+	subDir := filepath.Join(searchDir, "0_subdir_candidate")
+	if err := os.Mkdir(subDir, 0755); err != nil {
+		t.Fatalf("failed to create subdir: %v", err)
+	}
+	if err := os.Chtimes(subDir, now, now); err != nil {
+		t.Fatalf("failed to set times on subdir: %v", err)
+	}
+
+	// Regular candidate with 1 minute difference.
+	cand := filepath.Join(searchDir, "valid_candidate")
+	if err := ioutil.WriteFile(cand, []byte("valid cand"), 0600); err != nil {
+		t.Fatalf("failed to write cand: %v", err)
+	}
+	tCand := now.Add(1 * time.Minute)
+	if err := os.Chtimes(cand, tCand, tCand); err != nil {
+		t.Fatalf("failed to set times on cand: %v", err)
+	}
+
+	got, err := keyMatch(knownKeyPath, searchDir)
+	if err != nil {
+		t.Fatalf("keyMatch returned unexpected error: %v", err)
+	}
+	if got != cand {
+		t.Errorf("keyMatch got %q, want regular file candidate %q", got, cand)
+	}
+}
+
+func TestKeyMatch_NonRegularKeyPath(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// A directory passed as keyPath should fail validation.
+	dirKeyPath := filepath.Join(tmpDir, "dir_key")
+	if err := os.Mkdir(dirKeyPath, 0755); err != nil {
+		t.Fatalf("failed to create dir key: %v", err)
+	}
+
+	searchDir := filepath.Join(tmpDir, "search_dir")
+	if err := os.Mkdir(searchDir, 0755); err != nil {
+		t.Fatalf("failed to create search dir: %v", err)
+	}
+
+	_, err := keyMatch(dirKeyPath, searchDir)
+	if err == nil {
+		t.Errorf("keyMatch expected error when keyPath is not a regular file, got nil")
+	}
+}
+
+func TestKeyMatch_OutsideTolerance(t *testing.T) {
+	tmpDir := t.TempDir()
+	now := time.Now()
+
+	knownKeyPath := filepath.Join(tmpDir, "known_key")
+	if err := ioutil.WriteFile(knownKeyPath, []byte("known key content"), 0600); err != nil {
+		t.Fatalf("failed to write known key file: %v", err)
+	}
+	if err := os.Chtimes(knownKeyPath, now, now); err != nil {
+		t.Fatalf("failed to set times on known key file: %v", err)
+	}
+
+	searchDir := filepath.Join(tmpDir, "search_dir")
+	if err := os.Mkdir(searchDir, 0755); err != nil {
+		t.Fatalf("failed to create search dir: %v", err)
+	}
+
+	// Candidate file outside the 5-minute tolerance (6 minutes difference).
+	candOld := filepath.Join(searchDir, "old_candidate")
+	if err := ioutil.WriteFile(candOld, []byte("old cand"), 0600); err != nil {
+		t.Fatalf("failed to write candOld: %v", err)
+	}
+	tOld := now.Add(6 * time.Minute)
+	if err := os.Chtimes(candOld, tOld, tOld); err != nil {
+		t.Fatalf("failed to set times on candOld: %v", err)
+	}
+
+	got, err := keyMatch(knownKeyPath, searchDir)
+	if err != nil {
+		t.Fatalf("keyMatch returned unexpected error: %v", err)
+	}
+	if got != "" {
+		t.Errorf("keyMatch expected empty string for candidates outside tolerance, got %q", got)
+	}
+}
+
+func TestSetACL_NonExistentFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	nonExistent := filepath.Join(tmpDir, "does_not_exist")
+
+	err := setACL(nonExistent, "grant", "*S-1-1-0", "R")
+	if err == nil {
+		t.Fatal("setACL expected error for non-existent file, got nil")
+	}
+	if !strings.Contains(err.Error(), "unable to stat") {
+		t.Errorf("setACL unexpected error string: got %q, want containing 'unable to stat'", err)
+	}
+}
+
+func TestSetACL_NonRegularFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	subDir := filepath.Join(tmpDir, "subdir")
+	if err := os.Mkdir(subDir, 0755); err != nil {
+		t.Fatalf("failed to create subdir: %v", err)
+	}
+
+	err := setACL(subDir, "grant", "*S-1-1-0", "R")
+	if err == nil {
+		t.Fatal("setACL expected error for non-regular file (directory), got nil")
+	}
+	if !strings.Contains(err.Error(), "is not a regular file") {
+		t.Errorf("setACL unexpected error string: got %q, want containing 'is not a regular file'", err)
 	}
 }
