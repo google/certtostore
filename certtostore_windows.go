@@ -56,6 +56,9 @@ type WinCertStorage interface {
 	// RemoveByCertInfo removes certificate(s) with the given subject and serial number from the user and/or system cert stores.
 	RemoveByCertInfo(certinfo *windows.CertInfo, removeSystem bool) error
 
+	// RemoveByCertInfoWithKey removes certificate(s) with the given subject and serial number from the user and/or system cert stores, optionally deleting the private key.
+	RemoveByCertInfoWithKey(certinfo *windows.CertInfo, removeSystem bool, deleteKey bool) error
+
 	// Link will associate the certificate installed in the system store to the user store.
 	Link() error
 
@@ -220,6 +223,7 @@ var (
 	cryptFindCertificateKeyProvInfo   = crypt32.MustFindProc("CryptFindCertificateKeyProvInfo")
 	nCryptCreatePersistedKey          = nCrypt.MustFindProc("NCryptCreatePersistedKey")
 	nCryptDecrypt                     = nCrypt.MustFindProc("NCryptDecrypt")
+	nCryptDeleteKey                   = nCrypt.MustFindProc("NCryptDeleteKey")
 	nCryptExportKey                   = nCrypt.MustFindProc("NCryptExportKey")
 	nCryptFinalizeKey                 = nCrypt.MustFindProc("NCryptFinalizeKey")
 	nCryptFreeObject                  = nCrypt.MustFindProc("NCryptFreeObject")
@@ -820,6 +824,10 @@ type findCertFn func(h windows.Handle) (*windows.CertContext, error)
 
 // remove removes a certificate found via findCertFn from the user and/or system cert stores.
 func (w *WinCertStore) removeCert(findCertFn findCertFn, removeSystem bool) error {
+	return w.removeCertWithKey(findCertFn, removeSystem, false)
+}
+
+func (w *WinCertStore) removeCertWithKey(findCertFn findCertFn, removeSystem bool, deleteKey bool) error {
 	h, err := w.storeHandle(certStoreCurrentUser, my)
 	if err != nil {
 		return err
@@ -834,7 +842,7 @@ func (w *WinCertStore) removeCert(findCertFn findCertFn, removeSystem bool) erro
 	if userCertContext == nil {
 		deck.Info("No user certificate found.")
 	} else {
-		if err := RemoveCertByContext(userCertContext); err != nil {
+		if err := RemoveCertAndKeyByContext(userCertContext, deleteKey); err != nil {
 			return fmt.Errorf("failed to remove user cert: %v", err)
 		}
 		deck.Info("Cleaned up a user certificate.")
@@ -852,15 +860,14 @@ func (w *WinCertStore) removeCert(findCertFn findCertFn, removeSystem bool) erro
 	}
 
 	// Find the system cert.
-	systemCertContext, err := findCertFn(
-		h2)
+	systemCertContext, err := findCertFn(h2)
 	if err != nil {
 		return fmt.Errorf("remove: finding system certificate failed: %v", err)
 	}
 	if systemCertContext == nil {
 		deck.Info("No system certificate found.")
 	} else {
-		if err := RemoveCertByContext(systemCertContext); err != nil {
+		if err := RemoveCertAndKeyByContext(systemCertContext, deleteKey); err != nil {
 			return fmt.Errorf("failed to remove system cert: %v", err)
 		}
 		deck.Info("Cleaned up a system certificate.")
@@ -871,10 +878,15 @@ func (w *WinCertStore) removeCert(findCertFn findCertFn, removeSystem bool) erro
 
 // RemoveByCertInfo removes certificate(s) with the given subject and serial number from the user and/or system cert stores.
 func (w *WinCertStore) RemoveByCertInfo(certinfo *windows.CertInfo, removeSystem bool) error {
+	return w.RemoveByCertInfoWithKey(certinfo, removeSystem, false)
+}
+
+// RemoveByCertInfoWithKey removes certificate(s) with the given subject and serial number from the user and/or system cert stores, optionally deleting the private key.
+func (w *WinCertStore) RemoveByCertInfoWithKey(certinfo *windows.CertInfo, removeSystem bool, deleteKey bool) error {
 	if w.isReadOnly() {
 		return fmt.Errorf("cannot remove certificates from a read-only store")
 	}
-	return w.removeCert(func(h windows.Handle) (*windows.CertContext, error) {
+	return w.removeCertWithKey(func(h windows.Handle) (*windows.CertContext, error) {
 		return findCert(
 			h,
 			encodingX509ASN|encodingPKCS7,
@@ -882,7 +894,7 @@ func (w *WinCertStore) RemoveByCertInfo(certinfo *windows.CertInfo, removeSystem
 			findSubjectCert,
 			certinfo,
 			nil)
-	}, removeSystem)
+	}, removeSystem, deleteKey)
 }
 
 // RemoveCertByContext wraps CertDeleteCertificateFromStore. If the call succeeds, nil is returned, otherwise
@@ -893,6 +905,44 @@ func RemoveCertByContext(certContext *windows.CertContext) error {
 		return fmt.Errorf("certdeletecertificatefromstore failed with %X: %v", r, err)
 	}
 	return nil
+}
+
+// RemoveCertAndKeyByContext removes a certificate from the store, and optionally deletes the underlying CNG private key.
+func RemoveCertAndKeyByContext(certContext *windows.CertContext, deleteKey bool) error {
+	if certContext == nil {
+		return nil
+	}
+	if !deleteKey {
+		return RemoveCertByContext(certContext)
+	}
+
+	var (
+		kh       uintptr
+		spec     uint32
+		mustFree int
+	)
+	r, _, err := cryptAcquireCertificatePrivateKey.Call(
+		uintptr(unsafe.Pointer(certContext)),
+		acquireSilent|acquireOnlyNCryptKey,
+		0,
+		uintptr(unsafe.Pointer(&kh)),
+		uintptr(unsafe.Pointer(&spec)),
+		uintptr(unsafe.Pointer(&mustFree)),
+	)
+	if r == 0 || kh == 0 {
+		deck.Warningf("cryptAcquireCertificatePrivateKey failed before key deletion: %v", err)
+		return RemoveCertByContext(certContext)
+	}
+
+	if r1, _, err := nCryptDeleteKey.Call(kh, 0); r1 != 0 {
+		deck.Warningf("NCryptDeleteKey failed to delete private key (code %x): %v", r1, err)
+		if mustFree != 0 {
+			if err := freeObject(kh); err != nil {
+				deck.Warningf("failed to free key handle: %v", err)
+			}
+		}
+	}
+	return RemoveCertByContext(certContext)
 }
 
 // Intermediate returns the current intermediate cert associated with this
@@ -1291,7 +1341,7 @@ func (w *WinCertStore) generateECDSA(algID string) (crypto.Signer, error) {
 		uintptr(unsafe.Pointer(wide(algID))),
 		uintptr(unsafe.Pointer(wide(w.container))),
 		0,
-		w.keyAccessFlags|nCryptOverwriteKey)
+		w.keyAccessFlags)
 	if r != 0 {
 		return nil, fmt.Errorf("NCryptCreatePersistedKey returned %X: %v", r, err)
 	}
@@ -1335,7 +1385,7 @@ func (w *WinCertStore) generateRSA(keySize int) (crypto.Signer, error) {
 		uintptr(unsafe.Pointer(wide("RSA"))),
 		uintptr(unsafe.Pointer(wide(w.container))),
 		0,
-		w.keyAccessFlags|nCryptOverwriteKey)
+		w.keyAccessFlags)
 	if r != 0 {
 		return nil, fmt.Errorf("NCryptCreatePersistedKey returned %X: %v", r, err)
 	}
