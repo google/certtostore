@@ -36,6 +36,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 	"unicode/utf16"
 	"unsafe"
@@ -86,6 +87,9 @@ type WinCertStorage interface {
 	// or a link to a matching certificate already exists in the store
 	// https://learn.microsoft.com/en-us/windows/win32/api/wincrypt/nf-wincrypt-certaddcertificatecontexttostore
 	StoreWithDisposition(cert *x509.Certificate, intermediate *x509.Certificate, disposition uint32) error
+
+	// SetContainer updates the key container name used by Key() and Generate().
+	SetContainer(container string)
 }
 
 const (
@@ -580,7 +584,7 @@ func (w *WinCertStore) CertWithContext() (*x509.Certificate, *windows.CertContex
 	return c, ctx, nil
 }
 
-// cert is a helper function to lookup certificates based on a known issuer.
+// cert is a helper function to look up certificates based on a known issuer.
 // store is used to specify which store to perform the lookup in (system or user).
 func (w *WinCertStore) cert(issuers []string, searchRoot *uint16, store uint32) (*x509.Certificate, *windows.CertContext, error) {
 	h, err := w.storeHandle(store, searchRoot)
@@ -1241,6 +1245,13 @@ func setACL(file, access, sid, perm string) error {
 	return nil
 }
 
+// SetContainer updates the key container name used by Key() and Generate().
+func (w *WinCertStore) SetContainer(container string) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.container = container
+}
+
 // Key opens a handle to an existing private key and returns key.
 // Key implements both crypto.Signer and crypto.Decrypter.
 //
@@ -1249,15 +1260,19 @@ func setACL(file, access, sid, perm string) error {
 // with a different provider. Use CertKey() to derive a key directly from a Cert in situations
 // where both are needed.
 func (w *WinCertStore) Key() (Credential, error) {
+	w.mu.Lock()
+	container := w.container
+	w.mu.Unlock()
+
 	var kh uintptr
 	r, _, err := nCryptOpenKey.Call(
 		uintptr(w.Prov),
 		uintptr(unsafe.Pointer(&kh)),
-		uintptr(unsafe.Pointer(wide(w.container))),
+		uintptr(unsafe.Pointer(wide(container))),
 		0,
 		w.keyAccessFlags)
 	if r != 0 {
-		return nil, fmt.Errorf("NCryptOpenKey for container %q returned %X: %v", w.container, r, err)
+		return nil, fmt.Errorf("NCryptOpenKey for container %q returned %X: %v", container, r, err)
 	}
 
 	return keyMetadata(kh, w)
@@ -1289,6 +1304,9 @@ func (w *WinCertStore) CertKey(cert *windows.CertContext) (*Key, error) {
 	)
 	// If the function succeeds, the return value is nonzero (TRUE).
 	if r == 0 {
+		if errno, ok := err.(syscall.Errno); ok {
+			return nil, fmt.Errorf("cryptAcquireCertificatePrivateKey returned %X: %w", uint32(errno), err)
+		}
 		return nil, fmt.Errorf("cryptAcquireCertificatePrivateKey returned %X: %v", r, err)
 	}
 	if mustFree != 0 {
@@ -1332,6 +1350,10 @@ func (w *WinCertStore) Generate(opts GenerateOpts) (crypto.Signer, error) {
 }
 
 func (w *WinCertStore) generateECDSA(algID string) (crypto.Signer, error) {
+	w.mu.Lock()
+	container := w.container
+	w.mu.Unlock()
+
 	var kh uintptr
 	// Pass 0 as the fifth parameter because it is not used (legacy)
 	// https://msdn.microsoft.com/en-us/library/windows/desktop/aa376247(v=vs.85).aspx
@@ -1339,7 +1361,7 @@ func (w *WinCertStore) generateECDSA(algID string) (crypto.Signer, error) {
 		uintptr(w.Prov),
 		uintptr(unsafe.Pointer(&kh)),
 		uintptr(unsafe.Pointer(wide(algID))),
-		uintptr(unsafe.Pointer(wide(w.container))),
+		uintptr(unsafe.Pointer(wide(container))),
 		0,
 		w.keyAccessFlags)
 	if r != 0 {
@@ -1375,6 +1397,10 @@ func (w *WinCertStore) generateRSA(keySize int) (crypto.Signer, error) {
 		return nil, fmt.Errorf("unsupported keysize, got: %d, want: < %d", keySize, 16384)
 	}
 
+	w.mu.Lock()
+	container := w.container
+	w.mu.Unlock()
+
 	var kh uintptr
 	length := uint32(keySize)
 	// Pass 0 as the fifth parameter because it is not used (legacy)
@@ -1383,7 +1409,7 @@ func (w *WinCertStore) generateRSA(keySize int) (crypto.Signer, error) {
 		uintptr(w.Prov),
 		uintptr(unsafe.Pointer(&kh)),
 		uintptr(unsafe.Pointer(wide("RSA"))),
-		uintptr(unsafe.Pointer(wide(w.container))),
+		uintptr(unsafe.Pointer(wide(container))),
 		0,
 		w.keyAccessFlags)
 	if r != 0 {
@@ -1784,7 +1810,7 @@ func copyFile(from, to string) error {
 }
 
 // softwareKeyContainers returns the file path for a software backed key. If the key
-// was finalized with with NCRYPT_WRITE_KEY_TO_LEGACY_STORE_FLAG, it also returns its
+// was finalized with NCRYPT_WRITE_KEY_TO_LEGACY_STORE_FLAG, it also returns its
 // equivalent CryptoAPI key file path.
 // https://docs.microsoft.com/en-us/windows/win32/api/ncrypt/nf-ncrypt-ncryptfinalizekey.
 func softwareKeyContainers(uniqueID string, storeDomain uint32) (string, string, error) {

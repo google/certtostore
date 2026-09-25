@@ -856,3 +856,17 @@ func TestSetACL_NonRegularFile(t *testing.T) {
 		t.Errorf("setACL unexpected error string: got %q, want containing 'is not a regular file'", err)
 	}
 }
+
+func TestSetContainer(t *testing.T) {
+	store, err := OpenWinCertStoreCurrentUser(ProviderMSSoftware, "initial-container", nil, nil, false)
+	if err != nil {
+		t.Fatalf("OpenWinCertStoreCurrentUser() unexpected error: %v", err)
+	}
+	defer store.Close()
+
+	const want = "updated-container"
+	store.SetContainer(want)
+	if store.container != want {
+		t.Errorf("store.SetContainer(%q): store.container = %q, want %q", want, store.container, want)
+	}
+}
