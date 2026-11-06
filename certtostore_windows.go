@@ -1206,16 +1206,23 @@ func decrypt(kh uintptr, blob []byte, padding oaepPaddingInfo, flags uint32) ([]
 	return plainText[:size], nil
 }
 
-// SetACL sets the requested permissions on the private key. If a
-// cryptoAPI compatible copy of the key is present, the same ACL is set.
+// SetACL sets the requested permissions on each populated private key file
+// container (CNG and/or legacy CryptoAPI).
 func (k *Key) SetACL(access string, sid string, perm string) error {
-	if err := setACL(k.Container, access, sid, perm); err != nil {
-		return err
+	if k.Container == "" && k.LegacyContainer == "" {
+		return errors.New("cannot set ACL: both key container paths are empty")
 	}
-	if k.LegacyContainer == "" {
-		return nil
+	if k.Container != "" {
+		if err := setACL(k.Container, access, sid, perm); err != nil {
+			return err
+		}
 	}
-	return setACL(k.LegacyContainer, access, sid, perm)
+	if k.LegacyContainer != "" {
+		if err := setACL(k.LegacyContainer, access, sid, perm); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // setACL sets permissions for the private key by wrapping the Microsoft
@@ -1809,9 +1816,9 @@ func copyFile(from, to string) error {
 	return nil
 }
 
-// softwareKeyContainers returns the file path for a software backed key. If the key
-// was finalized with NCRYPT_WRITE_KEY_TO_LEGACY_STORE_FLAG, it also returns its
-// equivalent CryptoAPI key file path.
+// softwareKeyContainers returns the CNG and legacy CryptoAPI file paths for a
+// software-backed key. Either path may be empty when only one backing key file
+// is present on disk.
 // https://docs.microsoft.com/en-us/windows/win32/api/ncrypt/nf-ncrypt-ncryptfinalizekey.
 func softwareKeyContainers(uniqueID string, storeDomain uint32) (string, string, error) {
 	var cngRoot, capiRoot string
@@ -1855,9 +1862,6 @@ func softwareKeyContainers(uniqueID string, storeDomain uint32) (string, string,
 		cng, err = keyMatch(capi, cngRoot)
 		if err != nil {
 			return "", "", fmt.Errorf("unable to locate CNG key: %v", err)
-		}
-		if cng == "" {
-			return "", "", errors.New("CNG key was empty")
 		}
 	default:
 		return "", "", fmt.Errorf("unexpected key type %q", keyType)
