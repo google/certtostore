@@ -870,3 +870,220 @@ func TestSetContainer(t *testing.T) {
 		t.Errorf("store.SetContainer(%q): store.container = %q, want %q", want, store.container, want)
 	}
 }
+
+func TestKey_SetACL(t *testing.T) {
+	tmpDir := t.TempDir()
+	cngFile := filepath.Join(tmpDir, "cng_key")
+	if err := os.WriteFile(cngFile, []byte("cng key"), 0600); err != nil {
+		t.Fatalf("os.WriteFile(%q) failed: %v", cngFile, err)
+	}
+	capiFile := filepath.Join(tmpDir, "capi_key")
+	if err := os.WriteFile(capiFile, []byte("capi key"), 0600); err != nil {
+		t.Fatalf("os.WriteFile(%q) failed: %v", capiFile, err)
+	}
+	subDir := filepath.Join(tmpDir, "non_regular_dir")
+	if err := os.Mkdir(subDir, 0755); err != nil {
+		t.Fatalf("os.Mkdir(%q) failed: %v", subDir, err)
+	}
+	missingFile := filepath.Join(tmpDir, "missing_key")
+
+	tests := []struct {
+		name            string
+		container       string
+		legacyContainer string
+		wantErrSubstr   string
+	}{
+		{
+			name:            "capi_only_regular_legacy_container",
+			legacyContainer: capiFile,
+		},
+		{
+			name:            "capi_only_missing_legacy_container",
+			legacyContainer: missingFile,
+			wantErrSubstr:   "unable to stat",
+		},
+		{
+			name:      "cng_only_regular_container",
+			container: cngFile,
+		},
+		{
+			name:          "cng_only_missing_container",
+			container:     missingFile,
+			wantErrSubstr: "unable to stat",
+		},
+		{
+			name:          "cng_only_non_regular_container",
+			container:     subDir,
+			wantErrSubstr: "is not a regular file",
+		},
+		{
+			name:            "both_containers_regular",
+			container:       cngFile,
+			legacyContainer: capiFile,
+		},
+		{
+			name:            "both_containers_legacy_non_regular",
+			container:       cngFile,
+			legacyContainer: subDir,
+			wantErrSubstr:   "is not a regular file",
+		},
+		{
+			name:          "both_containers_empty",
+			wantErrSubstr: "both key container paths are empty",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			key := &Key{
+				Container:       tc.container,
+				LegacyContainer: tc.legacyContainer,
+			}
+			err := key.SetACL("grant", "*S-1-1-0", "R")
+			if tc.wantErrSubstr != "" {
+				if err == nil {
+					t.Fatalf("key.SetACL() = nil, want error containing %q", tc.wantErrSubstr)
+				}
+				if !strings.Contains(err.Error(), tc.wantErrSubstr) {
+					t.Errorf("key.SetACL() error = %q, want error containing %q", err.Error(), tc.wantErrSubstr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("key.SetACL() unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+func TestSoftwareKeyContainers(t *testing.T) {
+	sid, err := UserSID()
+	if err != nil {
+		t.Fatalf("UserSID() unexpected error: %v", err)
+	}
+
+	tests := []struct {
+		name          string
+		storeDomain   uint32
+		uniqueID      string
+		writeCNGName  string
+		writeCAPIName string
+		wantCNGName   string
+		wantCAPIName  string
+		wantErrSubstr string
+	}{
+		{
+			name:          "capi_only_local_machine",
+			storeDomain:   certStoreLocalMachine,
+			uniqueID:      "capi_unique_id",
+			writeCAPIName: "capi_unique_id",
+			wantCAPIName:  "capi_unique_id",
+		},
+		{
+			name:          "capi_with_matching_cng_local_machine",
+			storeDomain:   certStoreLocalMachine,
+			uniqueID:      "capi_unique_id",
+			writeCNGName:  "cng_partner_id",
+			writeCAPIName: "capi_unique_id",
+			wantCNGName:   "cng_partner_id",
+			wantCAPIName:  "capi_unique_id",
+		},
+		{
+			name:         "cng_only_local_machine",
+			storeDomain:  certStoreLocalMachine,
+			uniqueID:     "cng_unique_id",
+			writeCNGName: "cng_unique_id",
+			wantCNGName:  "cng_unique_id",
+		},
+		{
+			name:          "cng_with_matching_capi_local_machine",
+			storeDomain:   certStoreLocalMachine,
+			uniqueID:      "cng_unique_id",
+			writeCNGName:  "cng_unique_id",
+			writeCAPIName: "capi_partner_id",
+			wantCNGName:   "cng_unique_id",
+			wantCAPIName:  "capi_partner_id",
+		},
+		{
+			name:          "capi_only_current_user",
+			storeDomain:   certStoreCurrentUser,
+			uniqueID:      "capi_user_unique_id",
+			writeCAPIName: "capi_user_unique_id",
+			wantCAPIName:  "capi_user_unique_id",
+		},
+		{
+			name:          "missing_key_in_both_directories",
+			storeDomain:   certStoreLocalMachine,
+			uniqueID:      "missing_id",
+			wantErrSubstr: "unexpected key type",
+		},
+		{
+			name:          "invalid_store_domain",
+			storeDomain:   0,
+			uniqueID:      "any_id",
+			wantErrSubstr: "unexpected store domain",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			t.Setenv("ProgramData", tmpDir)
+			t.Setenv("AppData", tmpDir)
+
+			cngDir := filepath.Join(tmpDir, "Microsoft", "Crypto", "Keys")
+			capiDir := filepath.Join(tmpDir, "Microsoft", "Crypto", "RSA", "MachineKeys")
+			if tc.storeDomain == certStoreCurrentUser {
+				capiDir = filepath.Join(tmpDir, "Microsoft", "Crypto", "RSA", sid)
+			}
+			if err := os.MkdirAll(cngDir, 0755); err != nil {
+				t.Fatalf("os.MkdirAll(%q) failed: %v", cngDir, err)
+			}
+			if err := os.MkdirAll(capiDir, 0755); err != nil {
+				t.Fatalf("os.MkdirAll(%q) failed: %v", capiDir, err)
+			}
+
+			now := time.Now()
+			for dir, fileName := range map[string]string{cngDir: tc.writeCNGName, capiDir: tc.writeCAPIName} {
+				if fileName == "" {
+					continue
+				}
+				p := filepath.Join(dir, fileName)
+				if err := os.WriteFile(p, []byte("key material"), 0600); err != nil {
+					t.Fatalf("os.WriteFile(%q) failed: %v", p, err)
+				}
+				if err := os.Chtimes(p, now, now); err != nil {
+					t.Fatalf("os.Chtimes(%q) failed: %v", p, err)
+				}
+			}
+
+			gotCNG, gotCAPI, err := softwareKeyContainers(tc.uniqueID, tc.storeDomain)
+			if tc.wantErrSubstr != "" {
+				if err == nil {
+					t.Fatalf("softwareKeyContainers(%q, %d) = nil error, want error containing %q", tc.uniqueID, tc.storeDomain, tc.wantErrSubstr)
+				}
+				if !strings.Contains(err.Error(), tc.wantErrSubstr) {
+					t.Errorf("softwareKeyContainers(%q, %d) error = %q, want error containing %q", tc.uniqueID, tc.storeDomain, err.Error(), tc.wantErrSubstr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("softwareKeyContainers(%q, %d) unexpected error: %v", tc.uniqueID, tc.storeDomain, err)
+			}
+
+			var wantCNG, wantCAPI string
+			if tc.wantCNGName != "" {
+				wantCNG = filepath.Join(cngDir, tc.wantCNGName)
+			}
+			if tc.wantCAPIName != "" {
+				wantCAPI = filepath.Join(capiDir, tc.wantCAPIName)
+			}
+			if gotCNG != wantCNG {
+				t.Errorf("softwareKeyContainers(%q, %d) cng = %q, want %q", tc.uniqueID, tc.storeDomain, gotCNG, wantCNG)
+			}
+			if gotCAPI != wantCAPI {
+				t.Errorf("softwareKeyContainers(%q, %d) capi = %q, want %q", tc.uniqueID, tc.storeDomain, gotCAPI, wantCAPI)
+			}
+		})
+	}
+}
